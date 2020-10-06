@@ -45,7 +45,12 @@ def closest(data, ll_tuple):
     if(not(cutted_data)):
         cutted_data = cut_data(data, ll_tuple, CLEAR_SURROUND * 4)
 
-    return min(cutted_data, key=lambda p: distance(ll_tuple[1], ll_tuple[0], p[1], p[0]))
+    lon = ll_tuple[0]
+    lat = ll_tuple[1]
+
+    min_val = min(cutted_data, key=lambda p: distance(lat, lon, p[1], p[0]))
+
+    return min_val
 
 
 def parse_nodes(df, ele_dict):
@@ -131,7 +136,7 @@ def cli(src, elevation):
     df = pandas.read_csv(src)
 
     parse_nodes(df, ele_dict)
-    # parse_edges(df)
+    parse_edges(df)
 
 
 if(__name__ == '__main__'):
