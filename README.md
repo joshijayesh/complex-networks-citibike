@@ -4,7 +4,9 @@
 
 Requires these python libraries:
 
->>> pip install pandas click numbas numpy
+```console
+pip install pandas click numbas numpy
+```
 
 ## How to use parse.py
 
@@ -12,7 +14,9 @@ This got randomly complicated, so I'll be documenting how to use parse.py here. 
 bunch of data from the citibike csv as well as the elevation csv (optional). To use this script without elevation use
 as follows:
 
->>> python parse.py {path to citibike.csv}
+```console
+python parse.py {path to citibike.csv}
+```
 
 Where citibike.csv can be obtained [here] ()
 
@@ -22,7 +26,9 @@ This will output two csvs: nodes.csv and edges.csv which can be put into Gephi f
 
 You can also pass in elevation to the script. This can be achieved like below:
 
->>> python parse.py {path to citibike.csv} -e {path to elevation.csv}
+```console
+python parse.py {path to citibike.csv} -e {path to elevation.csv}
+```
 
 Where elevation.csv can be obtained [here] (https://data.cityofnewyork.us/Transportation/Elevation-points/szwg-xci6)
 
@@ -30,7 +36,9 @@ Since parsing the elevation csv takes a longggg time (its huge), there is an opt
 run it, the script will serialize the data onto a local file. Therefore, you can run future runs without the below
 option. I.e.
 
->>> python parse.py {path to citibike.csv}
+```console
+python parse.py {path to citibike.csv}
+```
 
 Note that this will still take forever, since for most nodes, we have to calculate the distance... and well you can
 imagine how long it'd take to calculate the minimum distance across that huge elevation file.
