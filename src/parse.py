@@ -1,8 +1,55 @@
 import pandas
 import click
+import re
+import pickle
+import os
+import numpy as np
+from math import cos, asin, sqrt
+from numba.typed import List
+from numba import njit
+
+timestamp_patt = re.compile(r"(.+) (.+)\.\d+")
+geom_point_patt = re.compile(r"([-+]?[0-9]+\.[0-9]+) ([-+]?[0-9]+\.[0-9]+)")
+
+ROUNDING_LEVEL = 5
+
+CLEAR_SURROUND = 0.0004  # This var is used to cut off a bunch of stuff from the elevation LUT
+# Too big => take too long
+# Too small => too small radius to look around
 
 
-def parse_nodes(df):
+@njit
+def distance(lat1, lon1, lat2, lon2):
+    p = 0.017453292519943295
+    a = 0.5 - cos((lat2-lat1)*p)/2 + cos(lat1*p)*cos(lat2*p) * (1-cos((lon2-lon1)*p)) / 2
+    return 12742 * asin(sqrt(a))
+
+
+@njit
+def cut_data(data, ll_tuple, surround):
+    new_data = List()
+    lon_min = ll_tuple[0] * (1 + surround)  # assuming lon is always negative
+    lon_max = ll_tuple[0] * (1 - surround)
+    lat_min = ll_tuple[1] * (1 - surround)
+    lat_max = ll_tuple[1] * (1 + surround)
+
+    for lon, lat in data:
+        if(lon_min <= lon <= lon_max and lat_min <= lat <= lat_max):
+            new_data.append((lon, lat, ))
+
+    return new_data
+
+
+def closest(data, ll_tuple):
+    cutted_data = cut_data(data, ll_tuple, CLEAR_SURROUND)
+    if(not(cutted_data)):
+        cutted_data = cut_data(data, ll_tuple, CLEAR_SURROUND * 4)
+
+    return min(cutted_data, key=lambda p: distance(ll_tuple[1], ll_tuple[0], p[1], p[0]))
+
+
+def parse_nodes(df, ele_dict):
+    print("Collecting Nodes")
     df = df.drop(["tripduration", "starttime", "stoptime", "bikeid", "usertype", "birth year", "gender"], axis=1)
     start_station = df.drop_duplicates(subset="start station id")
     start_station.drop(["end station id", "end station name", "end station latitude", "end station longitude"], axis=1, inplace=True)
@@ -14,23 +61,77 @@ def parse_nodes(df):
 
     complete_station = pandas.concat([start_station, end_station], ignore_index=True).drop_duplicates(subset="ID")
 
+    ele_list = []
+    ele_ll = np.array(list(ele_dict.keys()))
+
+    if(ele_dict):
+        print("\nFinding the closest elevation data, this'll take a while...")
+        with click.progressbar(length=len(complete_station["Latitude"])) as bar:
+            for idx, row in complete_station.iterrows():
+                ll_tuple = (round(float(row["Longitude"]), ROUNDING_LEVEL), round(float(row["Latitude"]), ROUNDING_LEVEL), )
+
+                if (ll_tuple in ele_dict):
+                    ele_list.append(ele_dict[ll_tuple])
+                else:
+                    ele_list.append(ele_dict[closest(ele_ll, ll_tuple)])
+
+                bar.update(1)
+    else:
+        ele_dict = [0] * len(complete_station["Longitude"])
+    
+    complete_station["Elevation"] = ele_list
+
     complete_station.to_csv("nodes.csv", index=False)
 
 
+def find_timestamp(timestamp):
+    patt = timestamp_patt.search(timestamp)
+    return "{}T{}".format(patt.group(1), patt.group(2))
+
+
 def parse_edges(df):
+    print("Collecting Edges")
     df = df.drop(["tripduration", "bikeid", "usertype", "birth year", "gender", "start station latitude", "start station longitude", "start station name", "end station latitude", "end station longitude", "end station name"], axis=1, inplace=False)
 
     df = df.rename(columns={"end station id": "Target", "start station id": "Source"})
+    df["starttime"] = df["starttime"].apply(find_timestamp)
+    df["stoptime"] = df["stoptime"].apply(find_timestamp)
+    df["Interval"] = df[['starttime', 'stoptime']].apply(lambda x: ', '.join(x), axis=1)
+    df["Interval"] = df["Interval"].apply(lambda x: "<[{}]>".format(x))
+    df = df.drop(["starttime", "stoptime"], axis=1, inplace=False)
     df.to_csv("edges.csv", index=False)
+
+
+def parse_elevation(elevation_src):
+    ele_dict = {}
+
+    print("Parsing through Elevation")
+    if(elevation_src):  # Holy hell this takes forever... hopefully pickling saves some time
+        df = pandas.read_csv(elevation_src)
+
+        for idx, row in df.iterrows():
+            geom = row['the_geom']
+            longitude, latitude = [round(float(i), ROUNDING_LEVEL) for i in geom_point_patt.search(geom).groups()]
+            ele_dict[(longitude, latitude, )] = row["ELEVATION"]
+        
+        pickle.dump(ele_dict, open("elevation_pickled.pickle", "wb"))
+    elif(os.path.exists("elevation_pickled.pickle")):
+        ele_dict = pickle.load(open("elevation_pickled.pickle", "rb"))
+
+    return ele_dict
 
 
 @click.command()
 @click.argument('src', required=True)
-def cli(src):
+@click.option("-e", "--elevation", help="Point to the elevation CSV")
+def cli(src, elevation):
+    ele_dict = parse_elevation(elevation)
+
+    print("Parsing {}".format(src))
     df = pandas.read_csv(src)
 
-    parse_nodes(df)
-    parse_edges(df)
+    parse_nodes(df, ele_dict)
+    # parse_edges(df)
 
 
 if(__name__ == '__main__'):
