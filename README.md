@@ -45,3 +45,13 @@ imagine how long it'd take to calculate the minimum distance across that huge el
 
 If you don't care about the elvation, then get rid of the elevation pickled file or don't create one in the first place.
 
+## Weather extension
+
+You can also pass in weather data to the script to tag the target with PRCP, TMAX, and TMIN.
+
+```console
+python parse.py ... -w {path to weather.csv}
+```
+
+Where weather.csv can be obtained [here] (https://www.ncdc.noaa.gov/data-access)
+
