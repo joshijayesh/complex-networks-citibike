@@ -1,19 +1,24 @@
 import pandas
+from pandas.tseries.holiday import USFederalHolidayCalendar
 import click
 import re
 import pickle
 import os
+from datetime import datetime
 import numpy as np
 from math import cos, asin, sqrt
 from numba.typed import List
 from numba import njit
 
 timestamp_patt = re.compile(r"(.+) (.+)\.\d+")
+timestamp_patt2 = re.compile(r"(\d+)-(\d+)-(\d+)")
 geom_point_patt = re.compile(r"([-+]?[0-9]+\.[0-9]+) ([-+]?[0-9]+\.[0-9]+)")
 
 ROUNDING_LEVEL = 5
 
 CLEAR_SURROUND = 0.0004  # This var is used to cut off a bunch of stuff from the elevation LUT
+US_CAL = USFederalHolidayCalendar()
+US_HOLIDAYS = US_CAL.holidays()
 # Too big => take too long
 # Too small => too small radius to look around
 
@@ -40,10 +45,10 @@ def cut_data(data, ll_tuple, surround):
     return new_data
 
 
-def closest(data, ll_tuple):
+def closest(data, ll_tuple, spike=4):
     cutted_data = cut_data(data, ll_tuple, CLEAR_SURROUND)
     if(not(cutted_data)):
-        cutted_data = cut_data(data, ll_tuple, CLEAR_SURROUND * 4)
+        cutted_data = cut_data(data, ll_tuple, CLEAR_SURROUND * spike)
 
     lon = ll_tuple[0]
     lat = ll_tuple[1]
@@ -94,17 +99,71 @@ def find_timestamp(timestamp):
     return "{}T{}".format(patt.group(1), patt.group(2))
 
 
-def parse_edges(df):
-    print("Collecting Edges")
-    df = df.drop(["tripduration", "bikeid", "usertype", "birth year", "gender", "start station latitude", "start station longitude", "start station name", "end station latitude", "end station longitude", "end station name"], axis=1, inplace=False)
+def find_weekday(timestamp):
+    year, month, day = [int(k) for k in timestamp_patt2.search(timestamp).groups()]
+    m_time = datetime(year, month, day)
 
+    return 0 <= m_time.isoweekday() <= 5
+
+
+def parse_edges_target(df, target=""):
+    if(target):
+        print("Collecting Edges for {}".format(target))
     df = df.rename(columns={"end station id": "Target", "start station id": "Source"})
     df["starttime"] = df["starttime"].apply(find_timestamp)
     df["stoptime"] = df["stoptime"].apply(find_timestamp)
     df["Interval"] = df[['starttime', 'stoptime']].apply(lambda x: ', '.join(x), axis=1)
     df["Interval"] = df["Interval"].apply(lambda x: "<[{}]>".format(x))
+    df["Weekday"] = df["starttime"].apply(find_weekday)
+    df["Holiday"] = df["starttime"].apply(lambda k: k in US_HOLIDAYS)
     df = df.drop(["starttime", "stoptime"], axis=1, inplace=False)
-    df.to_csv("edges.csv", index=False)
+    df.to_csv("edges{}.csv".format(target), index=False)
+
+
+def gather_weather(df, weather_dict={}):
+    if(weather_dict):
+        print("Collecting Weather Information")
+        pcp, tmax, tmin = [], [], []
+        weather_ll = np.array(list(weather_dict.keys()))
+        quick_lu = {}
+
+        with click.progressbar(length=len(df.index)) as bar:
+            for index, row in df.iterrows():
+                lat, lon = float(row["start station latitude"]), float(row["start station longitude"])
+                date = row["starttime"]
+                year, month, day = [int(k) for k in timestamp_patt2.search(date).groups()]
+
+                if((lat, lon) not in quick_lu):
+                    quick_lu[(lat, lon,)] = weather_dict[closest(weather_ll, (lon, lat, ), spike=20)]
+
+                closest_station = quick_lu[(lat, lon)][(year, month, day, )]
+
+                pcp.append(closest_station[0])            
+                tmax.append(closest_station[1])
+                tmin.append(closest_station[2])
+
+                bar.update(1)
+
+        df["PRCP"] = pcp
+        df["TMAX"] = tmax
+        df["TMIN"] = tmin
+            
+
+def parse_edges(df, per_day=False, weather_dict={}):
+    print("Collecting Edges")
+    gather_weather(df, weather_dict)
+    df = df.drop(["tripduration", "bikeid", "usertype", "birth year", "gender", "start station latitude", "start station longitude", "start station name", "end station latitude", "end station longitude", "end station name"], axis=1, inplace=False)
+
+    if(per_day):
+        df[['Day', 'null']] = df.stoptime.str.split(expand=True)
+        df[['Day', 'null']] = df.starttime.str.split(expand=True)
+        df = df.drop(['null'], axis=1, inplace=False)
+        dfs = dict(tuple(df.groupby("Day")))
+
+        for key, df in dfs.items():
+            parse_edges_target(df, key)
+    else:
+        parse_edges_target(df)
 
 
 def parse_elevation(elevation_src):
@@ -126,17 +185,43 @@ def parse_elevation(elevation_src):
     return ele_dict
 
 
+def parse_weather(weather_src):
+    weather_dict = {}
+    
+    print("Parsing through Weather")
+    
+    if(weather_src):
+        df = pandas.read_csv(weather_src)
+        df.dropna(subset=["PRCP", "TMAX", "TMIN"], inplace=True)
+
+        for idx, row in df.iterrows():
+            prcp, tmax, tmin = float(row["PRCP"]), int(row["TMAX"]), int(row["TMIN"])
+
+            year, month, day = [int(k) for k in timestamp_patt2.search(row["DATE"]).groups()]
+            lat, lon = float(row["LATITUDE"]), float(row["LONGITUDE"])
+            weather_dict.setdefault((lon, lat, ), {})[(year, month, day)] = (prcp, tmax, tmin,)
+
+    return weather_dict
+
+
 @click.command()
 @click.argument('src', required=True)
 @click.option("-e", "--elevation", help="Point to the elevation CSV")
-def cli(src, elevation):
+@click.option("-w", "--weather", help="Point to the weather CSV")
+@click.option("--per_day", help="Choose to break the data into per-day basis", is_flag=True, default=False)
+@click.option("--skip_nodes", help="Choose to skip nodes generation", is_flag=True, default=False)
+@click.option("--skip_edges", help="Choose to skip edges generation", is_flag=True, default=False)
+def cli(src, elevation, weather, per_day, skip_nodes, skip_edges):
     ele_dict = parse_elevation(elevation)
+    weather_dict = parse_weather(weather)
 
     print("Parsing {}".format(src))
     df = pandas.read_csv(src)
 
-    parse_nodes(df, ele_dict)
-    parse_edges(df)
+    if(not(skip_nodes)):
+        parse_nodes(df, ele_dict)
+    if(not(skip_edges)):
+        parse_edges(df, per_day, weather_dict)
 
 
 if(__name__ == '__main__'):
