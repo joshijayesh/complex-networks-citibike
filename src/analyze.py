@@ -95,7 +95,7 @@ def find_proximity_graph(nodes):
             if(tgt_node != node):
                 dist = gmaps.distance_matrix([str(origin_latitude) + " " + str(origin_longitude)],
                                              [str(dest_latitude) + " " + str(dest_longitude)],
-                                             mode='bicycling'
+                                             mode='walking'
                                             )['rows'][0]['elements'][0]
                 G.add_edge(node, tgt_node, dist=dist)
 
@@ -137,14 +137,12 @@ def parse_digraph(edges, nodes):
 @click.command()
 @click.argument("edges", required=True)
 @click.argument("nodes", required=True)
-@click.option("-s" ,"--stations", required=False)
-def cli(edges, nodes, stations):
+def cli(edges, nodes):
     prox_edge_list = Path("prox.edgelist")
     if(prox_edge_list.exists()):
         prox_G = nx.read_edgelist(prox_edge_list)
     else:
-        assert stations, "Required stations.json"
-        prox_G = find_proximity_graph(stations)
+        prox_G = find_proximity_graph(nodes)
         nx.write_edgelist(prox_G, "prox.edgelist")
 
     di_G = parse_digraph(edges, nodes)
