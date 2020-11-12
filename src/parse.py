@@ -4,6 +4,7 @@ import click
 import re
 import pickle
 import os
+import json
 from datetime import datetime
 import numpy as np
 from math import cos, asin, sqrt
@@ -17,10 +18,11 @@ geom_point_patt = re.compile(r"([-+]?[0-9]+\.[0-9]+) ([-+]?[0-9]+\.[0-9]+)")
 ROUNDING_LEVEL = 5
 
 CLEAR_SURROUND = 0.0004  # This var is used to cut off a bunch of stuff from the elevation LUT
-US_CAL = USFederalHolidayCalendar()
-US_HOLIDAYS = US_CAL.holidays()
 # Too big => take too long
 # Too small => too small radius to look around
+
+US_CAL = USFederalHolidayCalendar()
+US_HOLIDAYS = US_CAL.holidays()
 
 
 @njit
@@ -58,7 +60,7 @@ def closest(data, ll_tuple, spike=4):
     return min_val
 
 
-def parse_nodes(df, ele_dict):
+def parse_nodes(df, ele_dict, stations_dict):
     print("Collecting Nodes")
     df = df.drop(["tripduration", "starttime", "stoptime", "bikeid", "usertype", "birth year", "gender"], axis=1)
     start_station = df.drop_duplicates(subset="start station id")
@@ -87,9 +89,21 @@ def parse_nodes(df, ele_dict):
 
                 bar.update(1)
     else:
-        ele_dict = [0] * len(complete_station["Longitude"])
+        ele_list = [0] * len(complete_station["Longitude"])
+
+    stations_list = []
+    if(stations_dict):
+        stations_avg = int(np.average([v for k,v in stations_dict.items()]))
+        for idx, row in complete_station.iterrows():
+            if(row['ID'] not in stations_dict or stations_dict[row['ID']] == 0):
+                stations_list.append(stations_avg)
+            else:
+                stations_list.append(stations_dict[row['ID']])
+    else:
+        stations_list = [0] * len(complete_station['Longitude'])
     
     complete_station["Elevation"] = ele_list
+    complete_station["Capacity"] = stations_list
 
     complete_station.to_csv("nodes.csv", index=False)
 
@@ -204,22 +218,39 @@ def parse_weather(weather_src):
     return weather_dict
 
 
+def parse_stations(stations_src):
+    station_dict = {}
+
+    print("Parsing through Stations")
+
+    if(stations_src):
+        m_json = json.load(open(stations_src, "r"))
+        for feature in m_json["features"]:
+            station_id = feature['properties']['station_id']
+            capacity = feature['properties']['capacity']
+            station_dict[int(station_id)] = int(capacity)
+    
+    return station_dict
+
+
 @click.command()
 @click.argument('src', required=True)
 @click.option("-e", "--elevation", help="Point to the elevation CSV")
 @click.option("-w", "--weather", help="Point to the weather CSV")
+@click.option("-s", "--stations", help="Point to stations.json")
 @click.option("--per_day", help="Choose to break the data into per-day basis", is_flag=True, default=False)
 @click.option("--skip_nodes", help="Choose to skip nodes generation", is_flag=True, default=False)
 @click.option("--skip_edges", help="Choose to skip edges generation", is_flag=True, default=False)
-def cli(src, elevation, weather, per_day, skip_nodes, skip_edges):
+def cli(src, elevation, weather, stations, per_day, skip_nodes, skip_edges):
     ele_dict = parse_elevation(elevation)
     weather_dict = parse_weather(weather)
+    stations_dict = parse_stations(stations)
 
     print("Parsing {}".format(src))
     df = pandas.read_csv(src)
 
     if(not(skip_nodes)):
-        parse_nodes(df, ele_dict)
+        parse_nodes(df, ele_dict, stations_dict)
     if(not(skip_edges)):
         parse_edges(df, per_day, weather_dict)
 
