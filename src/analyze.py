@@ -4,12 +4,16 @@ import pandas as pd
 import numpy as np
 import googlemaps
 import time
+import collections
 from datetime import datetime
 from pathlib import Path
 from numba.typed import List
 from numba import njit
 from math import cos, asin, sqrt
 from prettytable import PrettyTable
+from matplotlib import pyplot as plt
+from pylab import rcParams
+rcParams['figure.figsize'] = 12, 12
 
 
 # These are for the finding proximity
@@ -18,7 +22,7 @@ MIN_SURROUND = 5
 MAX_SURROUND = 10
 
 # These are etc
-HOUR_TO_COLLECT = 8
+HOUR_TO_COLLECT = 11
 
 START_CONGESTION = 5
 
@@ -122,16 +126,50 @@ def parse_digraph(edges, nodes):
         if(start.hour <= HOUR_TO_COLLECT <= end_hour):  # We are either started or ended in the target hour!
             G.add_edge(row['Source'], row['Target'],)
 
-    x = PrettyTable()
-    x.field_names = ["ID", "Label", "Elevation", "Capacity", "In Degree"]
-    for k, v in G.in_degree:
-        if(v > 10):
-            node = G.nodes[k]
-            x.add_row([k, node['label'], node['elevation'], node['capacity'], v])
-    print(x)
+
+    if(False):
+        x = PrettyTable()
+        x.field_names = ["ID", "Label", "Elevation", "Capacity", "In Degree"]
+        for k, v in G.in_degree:
+            if(v > 10):
+                node = G.nodes[k]
+                x.add_row([k, node['label'], node['elevation'], node['capacity'], v])
+        print(x)
 
 
     return G
+
+
+def plot_in_degree_dist(G):
+    degrees = sorted([G.in_degree(n) for n in G.nodes()], reverse=True)
+    degreeCnt = collections.Counter(degrees)
+    deg, cnt = zip(*degreeCnt.items())
+
+    plt.subplot(2,2,1)
+    plt.hist(degrees)
+    plt.title("In Degree Histogram")
+
+    plt.subplot(2,2,2)
+    total_cnt = sum(cnt)
+    pdf_cnt = [i / total_cnt for i in list(cnt)]
+    plt.loglog(deg, pdf_cnt)
+    plt.title("In Degree PDF")
+
+    degrees = sorted([G.out_degree(n) for n in G.nodes()], reverse=True)
+    degreeCnt = collections.Counter(degrees)
+    deg, cnt = zip(*degreeCnt.items())
+
+    plt.subplot(2,2,3)
+    plt.hist(degrees)
+    plt.title("Out Degree Histogram")
+
+    plt.subplot(2,2,4)
+    total_cnt = sum(cnt)
+    pdf_cnt = [i / total_cnt for i in list(cnt)]
+    plt.loglog(deg, pdf_cnt)
+    plt.title("Out Degree PDF")
+
+    plt.show()
 
 
 @click.command()
@@ -142,10 +180,12 @@ def cli(edges, nodes):
     if(prox_edge_list.exists()):
         prox_G = nx.read_edgelist(prox_edge_list)
     else:
+        input("I gotta read all this stuff from Google API... this will take a long time... continue?")
         prox_G = find_proximity_graph(nodes)
         nx.write_edgelist(prox_G, "prox.edgelist")
 
     di_G = parse_digraph(edges, nodes)
+    plot_in_degree_dist(di_G)
 
 
 if(__name__ == '__main__'):
