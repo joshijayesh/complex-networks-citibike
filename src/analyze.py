@@ -5,6 +5,7 @@ import numpy as np
 import googlemaps
 import time
 import collections
+import random
 from datetime import datetime
 from pathlib import Path
 from numba.typed import List
@@ -25,6 +26,12 @@ MAX_SURROUND = 10
 HOUR_TO_COLLECT = 11
 
 START_CONGESTION = 5
+
+WEIGHT_S_a = 1
+WEIGHT_a = 1
+WEIGHT_a_b = 1
+WEIGHT_b = 1
+WEIGHT_b_D = 1
 
 
 @njit
@@ -112,7 +119,7 @@ def parse_digraph(edges, nodes):
     G = nx.DiGraph()
     df = pd.read_csv(nodes)
     for index, row in df.iterrows():
-        G.add_node(row['ID'], label=row['Label'], elevation=row['Elevation'], capacity=row['Capacity'])
+        G.add_node(str(row['ID']), label=row['Label'], elevation=row['Elevation'], capacity=row['Capacity'])
 
     df = pd.read_csv(edges)
     for index, row in df.iterrows():
@@ -124,7 +131,7 @@ def parse_digraph(edges, nodes):
             end_hour += 24
 
         if(start.hour <= HOUR_TO_COLLECT <= end_hour):  # We are either started or ended in the target hour!
-            G.add_edge(row['Source'], row['Target'],)
+            G.add_edge(str(row['Source']), str(row['Target']), chosen=False)
 
 
     if(False):
@@ -172,6 +179,63 @@ def plot_in_degree_dist(G):
     plt.show()
 
 
+def calc_congestion_drain(G, n):
+    capacity = G.nodes[n]['capacity']
+    in_degree = G.in_degree(n)
+
+    return (in_degree / capacity) * 100
+
+
+def calc_congestion_source(G, n):
+    capacity = G.nodes[n]['capacity']
+    out_degree = G.out_degree(n)
+
+    return (out_degree / capacity) * 100
+
+
+def find_nn(prox_G, n):
+    list_of_nn = []
+    for edge in prox_G.edges(n):
+        list_of_nn.append(edge[0] if edge[1] == n else edge[1])
+    return list_of_nn
+
+
+def optimize(G, prox_G, source, drain):
+    source_list = [source, *find_nn(prox_G, source)] if type(source) is str else source
+    dest_list = [source, *find_nn(prox_G, source)] if type(drain) is str else drain
+
+    d_a = [0] + [WEIGHT_S_a * prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] for k in source_list[1:]]
+    d_b = [0] + [WEIGHT_b_D * prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] for k in dest_list[1:]]
+    C_s = [WEIGHT_a * calc_congestion_source(G, k) for k in source_list]
+    C_d = [WEIGHT_b * calc_congestion_drain(G, k) for k in dest_list]
+
+    e = []
+    for s in source_list:
+        e.append([WEIGHT_a_b * (G.nodes[s]['elevation']- G.nodes[d]['elevation']) for d in dest_list])
+
+
+def optimize_stop(G, prox_G, n, congestion_min=50.0):
+    edge_list = list(G.in_edges(n))
+    dest_list = [n, *find_nn(prox_G, n)]
+    while(True):
+        C_d = calc_congestion_drain(G, n)
+        if(C_d < congestion_min): break  # If below congestion min, do not consider this node
+
+        num_choices = len(edge_list)
+        edge = edge_list[int(random.uniform(0, num_choices))]
+        if(G.edges[edge]["chosen"]): continue  # Do not choose the same one twice
+        G.edges[edge]["chosen"] = True
+        source = edge[0]
+
+        optimize(G, prox_G, source, dest_list)
+        
+
+
+def walk_nodes(G, prox_G):
+    n = '2006'  # This currently selects one node :P
+    optimize_stop(G, prox_G, n)
+
+
 @click.command()
 @click.argument("edges", required=True)
 @click.argument("nodes", required=True)
@@ -185,7 +249,8 @@ def cli(edges, nodes):
         nx.write_edgelist(prox_G, "prox.edgelist")
 
     di_G = parse_digraph(edges, nodes)
-    plot_in_degree_dist(di_G)
+    # plot_in_degree_dist(di_G)
+    walk_nodes(di_G, prox_G)
 
 
 if(__name__ == '__main__'):
