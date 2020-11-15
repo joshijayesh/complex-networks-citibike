@@ -26,16 +26,16 @@ MAX_SURROUND = 10
 # These are etc
 HOUR_TO_COLLECT = 15
 CONGESTION_CONSIDERATION = 50.0
-COMPLIANCE_RATE = 0.8
+COMPLIANCE_RATE = 0.80
 
 SCALE_d = 10
 SCALE_e = 10
 
-WEIGHT_S_a = (1/50) / SCALE_d
+WEIGHT_S_a = (1/150) / SCALE_d
 WEIGHT_a = 1
-WEIGHT_a_b = (1/50) / SCALE_e
+WEIGHT_a_b = (1/150) / SCALE_e
 WEIGHT_b = 1
-WEIGHT_b_D = (1/50) / SCALE_d
+WEIGHT_b_D = (1/150) / SCALE_d
 
 WEIGHT_a_A = 100000
 WEIGHT_b_B = 100000
@@ -132,6 +132,7 @@ def parse_digraph(edges, nodes):
 
     df = pd.read_csv(edges)
     for index, row in df.iterrows():
+        if(row['Source'] == row['Target']): continue
         start, end = row['Interval'][2:-2].split(", ")
         start = datetime.fromisoformat(start)
         end = datetime.fromisoformat(end)
@@ -190,14 +191,15 @@ def plot_degree_dist(G, name):
 
 
 def plot_congestion(G, name="", pre=True):
-    congestion = sorted([round(G.in_degree(n) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
+    congestion = sorted([round((G.in_degree(n) - G.out_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
     congestionCnt = collections.Counter(congestion)
     con, cnt = zip(*congestionCnt.items())
 
-    plt.subplot(2,2,1 if pre else 2)
+    plt.subplot(2,1,1 if pre else 2)
     plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
     plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
-    plt.title("{}::Full Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
+    plt.axvline(-CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
+    plt.title("{}::Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
     
     '''
     plt.subplot(2,2,2)
@@ -205,9 +207,8 @@ def plot_congestion(G, name="", pre=True):
     pdf_cnt = [i / total_cnt for i in list(cnt)]
     plt.loglog(con, pdf_cnt)
     plt.title("Full Congestion PDF: HOUR {}".format(HOUR_TO_COLLECT))
-    '''
 
-    congestion = sorted([round(G.out_degree(n) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
+    congestion = sorted([round((G.out_degree(n) - G.in_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
     congestionCnt = collections.Counter(congestion)
     con, cnt = zip(*congestionCnt.items())
 
@@ -216,7 +217,6 @@ def plot_congestion(G, name="", pre=True):
     plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
     plt.title("{}::Empty Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
 
-    '''
     plt.subplot(2,2,4)
     total_cnt = sum(cnt)
     pdf_cnt = [i / total_cnt for i in list(cnt)]
@@ -339,8 +339,10 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTI
     while(True):
         edge = edges[int(random.uniform(0, len(edges)))]
         consideration += 1
-        if(consideration >= len(edges)): break
-        if(edge[0] == edge[1]): continue
+        if(consideration >= 2 * len(edges)): break
+        if(edge[0] == edge[1]):
+            edges.remove(edge)  # Remove self loops
+            continue
         if(G.edges[edge]["chosen"]):continue
         C_d = calc_congestion_drain(G, edge[1])
         C_s = calc_congestion_source(G, edge[0])
@@ -374,7 +376,7 @@ def cli(edges, nodes, name):
     # plot_degree_dist(di_G, "pre.png")
     plot_congestion(di_G, pre=True)
     # walk_nodes(di_G, prox_G)
-    random_optimization(di_G, prox_G, num_consideration=500)
+    random_optimization(di_G, prox_G, num_consideration=10000)
     plot_congestion(di_G, name="{}.png".format(name), pre=False)
 
 
