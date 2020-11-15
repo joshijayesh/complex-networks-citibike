@@ -26,7 +26,7 @@ MAX_SURROUND = 10
 # These are etc
 HOUR_TO_COLLECT = 15
 CONGESTION_CONSIDERATION = 50.0
-COMPLIANCE_RATE = 0.80
+COMPLIANCE_RATE = 0.50
 
 SCALE_d = 10
 SCALE_e = 10
@@ -199,7 +199,9 @@ def plot_congestion(G, name="", pre=True):
     plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
     plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
     plt.axvline(-CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
-    plt.title("{}::Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
+    plt.title("{}::Congestion Histogram: HOUR {}: Compliance {}%".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT, COMPLIANCE_RATE * 100))
+    plt.xlabel("% of congestion, In - Out / Capacity")
+    plt.ylabel("Probability Distribution")
     
     '''
     plt.subplot(2,2,2)
@@ -230,15 +232,17 @@ def plot_congestion(G, name="", pre=True):
 def calc_congestion_drain(G, n, addl=0):
     capacity = G.nodes[n]['capacity']
     in_degree = G.in_degree(n) + addl
+    out_degree = G.out_degree(n)
 
-    return (in_degree / capacity) * 100
+    return (in_degree - out_degree / capacity) * 100
 
 
 def calc_congestion_source(G, n, addl=0):
     capacity = G.nodes[n]['capacity']
     out_degree = G.out_degree(n) + addl
+    in_degree = G.in_degree(n)
 
-    return (out_degree / capacity) * 100
+    return (out_degree - in_degree / capacity) * 100
 
 
 def find_nn(prox_G, n):
