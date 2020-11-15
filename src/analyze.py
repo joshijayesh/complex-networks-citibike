@@ -14,6 +14,7 @@ from math import cos, asin, sqrt
 from prettytable import PrettyTable
 from matplotlib import pyplot as plt
 from pylab import rcParams
+from solver_test import solve
 rcParams['figure.figsize'] = 12, 12
 
 
@@ -23,15 +24,25 @@ MIN_SURROUND = 5
 MAX_SURROUND = 10
 
 # These are etc
-HOUR_TO_COLLECT = 11
+HOUR_TO_COLLECT = 15
 
 START_CONGESTION = 5
+CONGESTION_CONSIDERATION = 50.0
+COMPLIANCE_RATE = 0.8
 
-WEIGHT_S_a = 1
+SCALE_d = 10
+SCALE_e = 10
+
+WEIGHT_S_a = (1/50) / SCALE_d
 WEIGHT_a = 1
-WEIGHT_a_b = 1
+WEIGHT_a_b = (1/50) / SCALE_e
 WEIGHT_b = 1
-WEIGHT_b_D = 1
+WEIGHT_b_D = (1/50) / SCALE_d
+
+WEIGHT_a_A = 100000
+WEIGHT_b_B = 100000
+
+OFFSET_e = 500
 
 
 @njit
@@ -147,13 +158,14 @@ def parse_digraph(edges, nodes):
     return G
 
 
-def plot_in_degree_dist(G):
+def plot_degree_dist(G, name):
     degrees = sorted([G.in_degree(n) for n in G.nodes()], reverse=True)
     degreeCnt = collections.Counter(degrees)
     deg, cnt = zip(*degreeCnt.items())
 
+    plt.clf()
     plt.subplot(2,2,1)
-    plt.hist(degrees)
+    plt.hist(degrees, bins=10, histtype='step')
     plt.title("In Degree Histogram")
 
     plt.subplot(2,2,2)
@@ -176,19 +188,57 @@ def plot_in_degree_dist(G):
     plt.loglog(deg, pdf_cnt)
     plt.title("Out Degree PDF")
 
-    plt.show()
+    plt.savefig(name)
 
 
-def calc_congestion_drain(G, n):
+def plot_congestion(G, name="", pre=True):
+    congestion = sorted([round(G.in_degree(n) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
+    congestionCnt = collections.Counter(congestion)
+    con, cnt = zip(*congestionCnt.items())
+
+    plt.subplot(2,2,1 if pre else 2)
+    plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
+    plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
+    plt.title("{}::Full Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
+    
+    '''
+    plt.subplot(2,2,2)
+    total_cnt = sum(cnt)
+    pdf_cnt = [i / total_cnt for i in list(cnt)]
+    plt.loglog(con, pdf_cnt)
+    plt.title("Full Congestion PDF: HOUR {}".format(HOUR_TO_COLLECT))
+    '''
+
+    congestion = sorted([round(G.out_degree(n) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
+    congestionCnt = collections.Counter(congestion)
+    con, cnt = zip(*congestionCnt.items())
+
+    plt.subplot(2,2,3 if pre else 4)
+    plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
+    plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
+    plt.title("{}::Empty Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
+
+    '''
+    plt.subplot(2,2,4)
+    total_cnt = sum(cnt)
+    pdf_cnt = [i / total_cnt for i in list(cnt)]
+    plt.loglog(con, pdf_cnt)
+    plt.title("Empty Congestion PDF: HOUR {}".format(HOUR_TO_COLLECT))
+    '''
+
+    if(not(pre)):
+        plt.savefig(name)
+
+def calc_congestion_drain(G, n, addl=0):
     capacity = G.nodes[n]['capacity']
-    in_degree = G.in_degree(n)
+    in_degree = G.in_degree(n) + addl
 
     return (in_degree / capacity) * 100
 
 
-def calc_congestion_source(G, n):
+def calc_congestion_source(G, n, addl=0):
     capacity = G.nodes[n]['capacity']
-    out_degree = G.out_degree(n)
+    out_degree = G.out_degree(n) + addl
 
     return (out_degree / capacity) * 100
 
@@ -202,30 +252,77 @@ def find_nn(prox_G, n):
 
 def optimize(G, prox_G, source, drain):
     source_list = [source, *find_nn(prox_G, source)] if type(source) is str else source
-    dest_list = [source, *find_nn(prox_G, source)] if type(drain) is str else drain
+    dest_list = [drain, *find_nn(prox_G, drain)] if type(drain) is str else drain
+
+    if(type(drain) is list):  # to avoid redundancy
+        if(source_list[0] in dest_list):  # If the drain is part of source_list, remove drain from source
+            dest_list.remove(source_list[0])
+        source_list = [x for x in source_list if x not in dest_list]
+    else:
+        if(dest_list[0] in source_list):
+            source_list.remove(dest_list[0])
+        dest_list = [x for x in dest_list if x not in source_list]
 
     d_a = [0] + [WEIGHT_S_a * prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] for k in source_list[1:]]
     d_b = [0] + [WEIGHT_b_D * prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] for k in dest_list[1:]]
-    C_s = [WEIGHT_a * calc_congestion_source(G, k) for k in source_list]
-    C_d = [WEIGHT_b * calc_congestion_drain(G, k) for k in dest_list]
+    C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
+    C_d = [calc_congestion_drain(G, k, 1 if k != source_list[0] else 0) for k in dest_list]
+    O_s = [WEIGHT_a_A * max(0, k - C_s[0]) for k in C_s]
+    O_d = [WEIGHT_b_B * max(0, k - C_d[0]) for k in C_d]
+
+    C_s = [WEIGHT_a * k for k in C_s]
+    C_d = [WEIGHT_b * k for k in C_d]
 
     e = []
     for s in source_list:
-        e.append([WEIGHT_a_b * (G.nodes[s]['elevation']- G.nodes[d]['elevation']) for d in dest_list])
+        e.append([WEIGHT_a_b * ((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + OFFSET_e) for d in dest_list])
+
+    sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, O_s, O_d, e)
+
+    if(sel_s == sel_d):
+        print("Already optimal path")
+    else:
+        G.remove_edge(source_list[0], dest_list[0])
+        G.add_edge(sel_s, sel_d, chosen=True)
+        print("Replacing {}->{} w/ {}->{}".format(source_list[0], dest_list[0], sel_s, sel_d))
 
 
-def optimize_stop(G, prox_G, n, congestion_min=50.0):
+def optimize_start(G, prox_G, n, congestion_min=CONGESTION_CONSIDERATION):
+    edge_list = list(G.out_edges(n))
+    source_list = [n, *find_nn(prox_G, n)]
+    considered = 0
+    while(True):
+        if(considered == len(edge_list)): break
+        C_s = calc_congestion_source(G, n)
+        if(C_s < congestion_min): break  # If below congestion min, do not consider this node
+
+        num_choices = len(edge_list)
+        edge = edge_list[int(random.uniform(0, num_choices))]
+        if(G.edges[edge]["chosen"]): continue  # Do not choose the same one twice
+        considered += 1
+        G.edges[edge]["chosen"] = True
+        dest = edge[1]
+        if(dest == n): continue  # do not consider self loops
+
+        optimize(G, prox_G, source_list, dest)
+
+
+def optimize_stop(G, prox_G, n, congestion_min=CONGESTION_CONSIDERATION):
     edge_list = list(G.in_edges(n))
     dest_list = [n, *find_nn(prox_G, n)]
+    considered = 0
     while(True):
+        if(considered == len(edge_list)): break 
         C_d = calc_congestion_drain(G, n)
         if(C_d < congestion_min): break  # If below congestion min, do not consider this node
 
         num_choices = len(edge_list)
         edge = edge_list[int(random.uniform(0, num_choices))]
         if(G.edges[edge]["chosen"]): continue  # Do not choose the same one twice
+        considered += 1
         G.edges[edge]["chosen"] = True
         source = edge[0]
+        if(source == n): continue  # do not consider self loops
 
         optimize(G, prox_G, source, dest_list)
         
@@ -233,13 +330,40 @@ def optimize_stop(G, prox_G, n, congestion_min=50.0):
 
 def walk_nodes(G, prox_G):
     n = '2006'  # This currently selects one node :P
+    optimize_start(G, prox_G, n)
     optimize_stop(G, prox_G, n)
+
+
+def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTION_CONSIDERATION):
+    edges = list(G.edges)
+    cnt = 0
+    consideration = 0
+    while(True):
+        edge = edges[int(random.uniform(0, len(edges)))]
+        consideration += 1
+        if(consideration >= len(edges)): break
+        if(edge[0] == edge[1]): continue
+        if(G.edges[edge]["chosen"]):continue
+        C_d = calc_congestion_drain(G, edge[1])
+        C_s = calc_congestion_source(G, edge[0])
+
+        if(C_s < congestion_min and C_d < congestion_min): continue # If below congestion min, do not consider this node
+        consideration = 0
+
+        if(random.random() <= COMPLIANCE_RATE):  # Simulating refusal to comply
+            optimize(G, prox_G, edge[0], edge[1])
+        edges.remove(edge)
+
+        cnt += 1
+        if(cnt >= num_consideration): break
+        print(cnt)
 
 
 @click.command()
 @click.argument("edges", required=True)
 @click.argument("nodes", required=True)
-def cli(edges, nodes):
+@click.option("-n", "--name", help="Choose name of the output", default="output")
+def cli(edges, nodes, name):
     prox_edge_list = Path("prox.edgelist")
     if(prox_edge_list.exists()):
         prox_G = nx.read_edgelist(prox_edge_list)
@@ -249,8 +373,11 @@ def cli(edges, nodes):
         nx.write_edgelist(prox_G, "prox.edgelist")
 
     di_G = parse_digraph(edges, nodes)
-    # plot_in_degree_dist(di_G)
-    walk_nodes(di_G, prox_G)
+    # plot_degree_dist(di_G, "pre.png")
+    plot_congestion(di_G, pre=True)
+    # walk_nodes(di_G, prox_G)
+    random_optimization(di_G, prox_G, num_consideration=500)
+    plot_congestion(di_G, name="{}.png".format(name), pre=False)
 
 
 if(__name__ == '__main__'):
