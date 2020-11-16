@@ -26,16 +26,16 @@ MAX_SURROUND = 10
 # These are etc
 HOUR_TO_COLLECT = 15
 CONGESTION_CONSIDERATION = 50.0
-COMPLIANCE_RATE = 0.50
+COMPLIANCE_RATE = 0.2
 
 SCALE_d = 10
 SCALE_e = 10
 
-WEIGHT_S_a = (1/150) / SCALE_d
+WEIGHT_S_a = (1/150)
 WEIGHT_a = 1
-WEIGHT_a_b = (1/150) / SCALE_e
+WEIGHT_a_b = (1/1500)
 WEIGHT_b = 1
-WEIGHT_b_D = (1/150) / SCALE_d
+WEIGHT_b_D = (1/150)
 
 WEIGHT_a_A = 100000
 WEIGHT_b_B = 100000
@@ -265,8 +265,8 @@ def optimize(G, prox_G, source, drain):
             source_list.remove(dest_list[0])
         dest_list = [x for x in dest_list if x not in source_list]
 
-    d_a = [0] + [WEIGHT_S_a * (prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] ** 2) for k in source_list[1:]]
-    d_b = [0] + [WEIGHT_b_D * (prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] ** 2) for k in dest_list[1:]]
+    d_a = [0] + [WEIGHT_S_a * ((prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in source_list[1:]]
+    d_b = [0] + [WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in dest_list[1:]]
     C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
     C_d = [calc_congestion_drain(G, k, 1 if k != source_list[0] else 0) for k in dest_list]
     O_s = [WEIGHT_a_A * max(0, k - C_s[0]) for k in C_s]
@@ -277,7 +277,7 @@ def optimize(G, prox_G, source, drain):
 
     e = []
     for s in source_list:
-        e.append([WEIGHT_a_b * (((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + OFFSET_e) ** 2) for d in dest_list])
+        e.append([WEIGHT_a_b * ((((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + OFFSET_e) / SCALE_e) ** 2) for d in dest_list])
 
     sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, O_s, O_d, e)
 
