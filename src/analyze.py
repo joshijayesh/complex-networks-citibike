@@ -248,8 +248,9 @@ def plot_congestion(G, name="", pre=True):
         lines, labels = ax.get_legend_handles_labels()
         fig.legend(lines, labels, loc='upper right')
         day = calendar.day_name[CURRENT_DAY.weekday()]
+        t = time.strptime(str(HOUR_TO_COLLECT), "%H")
         fig.suptitle("Congestion Distribution for {} {}/{}/{}\nHOUR: {} COMPLIANCE RATE: {}%".format(
-            day, CURRENT_DAY.month, CURRENT_DAY.day, CURRENT_DAY.year, HOUR_TO_COLLECT, COMPLIANCE_RATE * 100),
+            day, CURRENT_DAY.month, CURRENT_DAY.day, CURRENT_DAY.year, time.strftime(" %I %p", t).replace(" 0", " "), COMPLIANCE_RATE * 100),
             fontsize=20, fontweight='bold')
         plt.savefig(name)
 
@@ -349,7 +350,7 @@ def optimize_stop(G, prox_G, n, congestion_min=CONGESTION_CONSIDERATION):
         if(C_d < congestion_min): break  # If below congestion min, do not consider this node
 
         num_choices = len(edge_list)
-        edge = edge_list[int(random.uniform(0, num_choices))]
+        edge = edge_list[int(random.uniform(0, num_choices - 1))]
         if(G.edges[edge]["chosen"]): continue  # Do not choose the same one twice
         considered += 1
         G.edges[edge]["chosen"] = True
