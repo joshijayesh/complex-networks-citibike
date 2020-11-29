@@ -1,4 +1,5 @@
 import click
+import csv
 import networkx as nx
 import pandas as pd
 import numpy as np
@@ -24,21 +25,18 @@ MIN_SURROUND = 5
 MAX_SURROUND = 10
 
 # These are etc
-HOUR_TO_COLLECT = 15
+HOUR_TO_COLLECT = 17
 CONGESTION_CONSIDERATION = 50.0
 COMPLIANCE_RATE = 0.2
 
 SCALE_d = 10
 SCALE_e = 10
 
-WEIGHT_S_a = (1/150)
+WEIGHT_S_a = (1/250)
 WEIGHT_a = 1
 WEIGHT_a_b = (1/1500)
 WEIGHT_b = 1
-WEIGHT_b_D = (1/150)
-
-WEIGHT_a_A = 100000
-WEIGHT_b_B = 100000
+WEIGHT_b_D = (1/250)
 
 OFFSET_e = 500
 
@@ -128,7 +126,7 @@ def parse_digraph(edges, nodes):
     G = nx.DiGraph()
     df = pd.read_csv(nodes)
     for index, row in df.iterrows():
-        G.add_node(str(row['ID']), label=row['Label'], elevation=row['Elevation'], capacity=row['Capacity'])
+        G.add_node(str(row['ID']), label=row['Label'], elevation=row['Elevation'], capacity=row['Capacity'], latitude=row['Latitude'], longitude=row['Longitude'])
 
     df = pd.read_csv(edges)
     for index, row in df.iterrows():
@@ -269,8 +267,6 @@ def optimize(G, prox_G, source, drain):
     d_b = [0] + [WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in dest_list[1:]]
     C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
     C_d = [calc_congestion_drain(G, k, 1 if k != source_list[0] else 0) for k in dest_list]
-    O_s = [WEIGHT_a_A * max(0, k - C_s[0]) for k in C_s]
-    O_d = [WEIGHT_b_B * max(0, k - C_d[0]) for k in C_d]
 
     C_s = [WEIGHT_a * k for k in C_s]
     C_d = [WEIGHT_b * k for k in C_d]
@@ -279,7 +275,7 @@ def optimize(G, prox_G, source, drain):
     for s in source_list:
         e.append([WEIGHT_a_b * ((((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + OFFSET_e) / SCALE_e) ** 2) for d in dest_list])
 
-    sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, O_s, O_d, e)
+    sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, e)
 
     if(sel_s == sel_d):
         print("Already optimal path")
@@ -363,6 +359,24 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTI
         print(cnt)
 
 
+def output_nodes_congestion(di_G, name):
+    with open(name, "w", newline='') as csv_file:
+        csv_writer = csv.writer(csv_file, delimiter=",")
+        rows = [['ID', 'Label', 'Latitude', 'Longitude', 'Elevation', 'Capacity', 'Congestion']]
+        for node in di_G.nodes(data=True):
+            rows.append([node[0], node[1]['label'], node[1]['latitude'], node[1]['longitude'], node[1]['elevation'], node[1]['capacity']])
+            # Round congestion so can plot nicely
+            rows[-1].append(
+                 round(((di_G.in_degree(node[0]) - di_G.out_degree(node[0])) / node[1]['capacity']) * 100))
+        csv_writer.writerows(rows)
+
+
+def output_edges(di_G, name):
+    nx.write_edgelist(di_G, name, delimiter=",", data=False)
+    df = pd.read_csv(name, header=None)
+    df.to_csv(name, header=["Source", "Target"], index=False)
+
+
 @click.command()
 @click.argument("edges", required=True)
 @click.argument("nodes", required=True)
@@ -377,11 +391,16 @@ def cli(edges, nodes, name):
         nx.write_edgelist(prox_G, "prox.edgelist")
 
     di_G = parse_digraph(edges, nodes)
+    output_nodes_congestion(di_G, "out_nodes_pre.csv")
+    output_edges(di_G, "out_edges_pre.csv")
     # plot_degree_dist(di_G, "pre.png")
     plot_congestion(di_G, pre=True)
     # walk_nodes(di_G, prox_G)
     random_optimization(di_G, prox_G, num_consideration=10000)
     plot_congestion(di_G, name="{}.png".format(name), pre=False)
+    output_nodes_congestion(di_G, "out_nodes_post.csv")
+    output_edges(di_G, "out_edges_post.csv")
+
 
 
 if(__name__ == '__main__'):
