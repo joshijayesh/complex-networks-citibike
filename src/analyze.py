@@ -371,6 +371,9 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTI
     edges = list(G.edges)
     cnt = 0
     consideration = 0
+    num_applied = 0
+    num_rejected = 0
+    total = len(edges)
     while(True):
         edge = edges[int(random.uniform(0, len(edges)))]
         consideration += 1
@@ -387,11 +390,19 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTI
 
         if(random.random() <= COMPLIANCE_RATE):  # Simulating refusal to comply
             optimize(G, prox_G, edge[0], edge[1])
+            num_applied += 1
+            print("Accepted {}".format(num_applied))
+        else:
+            num_rejected += 1
+            print("Rejected {}".format(num_rejected))
         edges.remove(edge)
 
         cnt += 1
         if(cnt >= num_consideration): break
-        print(cnt)
+
+    print("Total Number of Trips: {}".format(total))
+    print("Num Accepted {}; Of Total {} %".format(num_applied, num_applied/total))
+    print("Num Rejected {}; Of Total {} %".format(num_rejected, num_rejected/total))
 
 
 def output_nodes_congestion(di_G, name):
@@ -435,7 +446,6 @@ def cli(edges, nodes, name):
     plot_congestion(di_G, name="{}.png".format(name), pre=False)
     output_nodes_congestion(di_G, "out_nodes_post.csv")
     output_edges(di_G, "out_edges_post.csv")
-
 
 
 if(__name__ == '__main__'):
