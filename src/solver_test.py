@@ -10,14 +10,14 @@ def calc_weight(G, s, d):
     return weight
 
 
-def solve(source_list, dest_list, d_a, d_b, C_s, C_d, O_s, O_d, e):
+def solve(source_list, dest_list, d_a, d_b, C_s, C_d, e):
     G = nx.DiGraph()
 
     for idx, node in enumerate(source_list):
-        G.add_edge("S", node, weight=d_a[idx] + C_s[idx] + O_s[idx])
+        G.add_edge("S", node, weight=d_a[idx] + C_s[idx])
 
     for idx, node in enumerate(dest_list):
-        G.add_edge(node, "D", weight=d_b[idx] + C_d[idx] + O_d[idx])
+        G.add_edge(node, "D", weight=d_b[idx] + C_d[idx])
 
     for i, src in enumerate(source_list):
         for j, dest in enumerate(dest_list):
@@ -30,9 +30,15 @@ def solve(source_list, dest_list, d_a, d_b, C_s, C_d, O_s, O_d, e):
 
     if(True):
         x = PrettyTable()
-        x.field_names = ["a", "b", "cost"]
-        x.add_row([source_list[0], dest_list[0], calc_weight(G, source_list[0], dest_list[0])])
-        x.add_row([shortest_path[1], shortest_path[2], calc_weight(G, shortest_path[1], shortest_path[2])])
+        x.field_names = ["a", "b", "distA cost", "conA cost", "eAB cost", "conB cost","distB cost","total cost"]
+        x.add_row([source_list[0], dest_list[0], d_a[0], C_s[0], e[0][0], 
+            C_d[0], d_b[0],
+            calc_weight(G, source_list[0], dest_list[0])])
+        idx_s = source_list.index(shortest_path[1])
+        idx_d = dest_list.index(shortest_path[2])
+        x.add_row([shortest_path[1], shortest_path[2], d_a[idx_s], C_s[idx_s],
+            e[idx_s][idx_d], C_d[idx_d], d_b[idx_d],
+            calc_weight(G, shortest_path[1], shortest_path[2])])
 
         print(x)
     

@@ -1,5 +1,6 @@
 import click
 import csv
+import calendar
 import networkx as nx
 import pandas as pd
 import numpy as np
@@ -14,6 +15,7 @@ from numba import njit
 from math import cos, asin, sqrt
 from prettytable import PrettyTable
 from matplotlib import pyplot as plt
+from matplotlib.ticker import MultipleLocator, FormatStrFormatter
 from pylab import rcParams
 from solver_test import solve
 rcParams['figure.figsize'] = 12, 12
@@ -26,19 +28,21 @@ MAX_SURROUND = 10
 
 # These are etc
 HOUR_TO_COLLECT = 17
-CONGESTION_CONSIDERATION = 50.0
+CONGESTION_CONSIDERATION = 25.0
 COMPLIANCE_RATE = 0.2
 
 SCALE_d = 10
 SCALE_e = 10
 
-WEIGHT_S_a = (1/250)
+WEIGHT_S_a = (1/150)
 WEIGHT_a = 1
 WEIGHT_a_b = (1/1500)
 WEIGHT_b = 1
-WEIGHT_b_D = (1/250)
+WEIGHT_b_D = (1/150)
 
-OFFSET_e = 500
+OFFSET_e = 1000
+
+CURRENT_DAY = None
 
 
 @njit
@@ -123,6 +127,7 @@ def find_proximity_graph(nodes):
 
 
 def parse_digraph(edges, nodes):
+    global CURRENT_DAY
     G = nx.DiGraph()
     df = pd.read_csv(nodes)
     for index, row in df.iterrows():
@@ -138,18 +143,11 @@ def parse_digraph(edges, nodes):
         if(end.hour < start.hour):
             end_hour += 24
 
+        if(CURRENT_DAY is None and start.day == end.day):  # need to check if day is equal to avoid mixed days
+            CURRENT_DAY = start
+
         if(start.hour <= HOUR_TO_COLLECT <= end_hour):  # We are either started or ended in the target hour!
             G.add_edge(str(row['Source']), str(row['Target']), chosen=False)
-
-
-    if(False):
-        x = PrettyTable()
-        x.field_names = ["ID", "Label", "Elevation", "Capacity", "In Degree"]
-        for k, v in G.in_degree:
-            if(v > 10):
-                node = G.nodes[k]
-                x.add_row([k, node['label'], node['elevation'], node['capacity'], v])
-        print(x)
 
 
     return G
@@ -189,42 +187,70 @@ def plot_degree_dist(G, name):
 
 
 def plot_congestion(G, name="", pre=True):
+    global pre_min, pre_max, fig
     congestion = sorted([round((G.in_degree(n) - G.out_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
     congestionCnt = collections.Counter(congestion)
     con, cnt = zip(*congestionCnt.items())
 
-    plt.subplot(2,1,1 if pre else 2)
-    plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
-    plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
-    plt.axvline(-CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
-    plt.title("{}::Congestion Histogram: HOUR {}: Compliance {}%".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT, COMPLIANCE_RATE * 100))
+    out_congestion = {}
+    in_congestion = {}
+
+    for key, value in congestionCnt.items():
+        if(key <= 0):
+            out_congestion[key] = value
+        if(key >= 0):
+            in_congestion[key] = value
+
+    in_total_count = sum([v for k, v in in_congestion.items()])
+    out_total_count = sum([v for k, v in out_congestion.items()])
+
+    min_val = min(out_congestion.keys())
+    min_val_rounded_range = int(min_val - (min_val % 1))
+    min_val_rounded_lims = int(min_val - (min_val % 50))
+    max_val = max(in_congestion.keys())
+    max_val_rounded_range = int(max_val + (1 - (max_val % 1)))
+    max_val_rounded_lims = int(max_val + (50 - (max_val % 50)))
+
+    if(pre):
+        fig = plt.figure()
+        pre_min = min_val_rounded_lims
+        pre_max = max_val_rounded_lims
+
+    y_values_out = []
+    y_values_in = []
+
+    # * 100 to represent lower granularity
+    for i in range(min_val_rounded_range * 100, (max_val_rounded_range * 100) + 1, 50): # spacing of 0.5% if 50
+        tgt = i / 100
+        if(tgt <= 0):
+            y_values_out.append(sum([v if k <= tgt else 0 for k, v in out_congestion.items()]) / out_total_count)
+        if(tgt >= 0):
+            y_values_in.append(sum([v if k >= tgt else 0 for k, v in in_congestion.items()]) / in_total_count)
+
+    ax = plt.subplot(2,1,1 if pre else 2)
+    # plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
+    plt.plot([k / 100 for k in range(min_val_rounded_range * 100, 0 + 1, 50)], y_values_out, color='r')
+    plt.plot([k / 100 for k in range(0, (max_val_rounded_range * 100) + 1, 50)], y_values_in, color='b')
+    plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_IN = {}".format(CONGESTION_CONSIDERATION))
+    plt.axvline(-CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_OUT = {}".format(-CONGESTION_CONSIDERATION))
+    plt.axvline(min_val, color='r', linestyle='solid', linewidth=1, label="OUT_WORST")
+    plt.axvline(max_val, color='b', linestyle='solid', linewidth=1, label="IN_WORST")
+    plt.title("{}::Congestion PDF".format("BEFORE" if pre else "AFTER"))
     plt.xlabel("% of congestion, In - Out / Capacity")
     plt.ylabel("Probability Distribution")
     
-    '''
-    plt.subplot(2,2,2)
-    total_cnt = sum(cnt)
-    pdf_cnt = [i / total_cnt for i in list(cnt)]
-    plt.loglog(con, pdf_cnt)
-    plt.title("Full Congestion PDF: HOUR {}".format(HOUR_TO_COLLECT))
-
-    congestion = sorted([round((G.out_degree(n) - G.in_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
-    congestionCnt = collections.Counter(congestion)
-    con, cnt = zip(*congestionCnt.items())
-
-    plt.subplot(2,2,3 if pre else 4)
-    plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
-    plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1)
-    plt.title("{}::Empty Congestion Histogram: HOUR {}".format("BEFORE" if pre else "AFTER", HOUR_TO_COLLECT))
-
-    plt.subplot(2,2,4)
-    total_cnt = sum(cnt)
-    pdf_cnt = [i / total_cnt for i in list(cnt)]
-    plt.loglog(con, pdf_cnt)
-    plt.title("Empty Congestion PDF: HOUR {}".format(HOUR_TO_COLLECT))
-    '''
-
+    plt.xlim([pre_min - 1, pre_max + 1])
+    ax.xaxis.set_major_locator(MultipleLocator(25))
+    ax.xaxis.set_major_formatter(FormatStrFormatter('%d'))
+    ax.xaxis.set_minor_locator(MultipleLocator(5))
+    
     if(not(pre)):
+        lines, labels = ax.get_legend_handles_labels()
+        fig.legend(lines, labels, loc='upper right')
+        day = calendar.day_name[CURRENT_DAY.weekday()]
+        fig.suptitle("Congestion Distribution for {} {}/{}/{}\nHOUR: {} COMPLIANCE RATE: {}%".format(
+            day, CURRENT_DAY.month, CURRENT_DAY.day, CURRENT_DAY.year, HOUR_TO_COLLECT, COMPLIANCE_RATE * 100),
+            fontsize=20, fontweight='bold')
         plt.savefig(name)
 
 def calc_congestion_drain(G, n, addl=0):
@@ -232,7 +258,7 @@ def calc_congestion_drain(G, n, addl=0):
     in_degree = G.in_degree(n) + addl
     out_degree = G.out_degree(n)
 
-    return (in_degree - out_degree / capacity) * 100
+    return max(0, ((in_degree - out_degree) / capacity) * 100)
 
 
 def calc_congestion_source(G, n, addl=0):
@@ -240,7 +266,8 @@ def calc_congestion_source(G, n, addl=0):
     out_degree = G.out_degree(n) + addl
     in_degree = G.in_degree(n)
 
-    return (out_degree - in_degree / capacity) * 100
+    return max(0, ((out_degree - in_degree) / capacity) * 100)
+        
 
 
 def find_nn(prox_G, n):
@@ -263,6 +290,7 @@ def optimize(G, prox_G, source, drain):
             source_list.remove(dest_list[0])
         dest_list = [x for x in dest_list if x not in source_list]
 
+    # Sorry, one-liners are the best for these scenarios
     d_a = [0] + [WEIGHT_S_a * ((prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in source_list[1:]]
     d_b = [0] + [WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in dest_list[1:]]
     C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
@@ -272,7 +300,7 @@ def optimize(G, prox_G, source, drain):
     C_d = [WEIGHT_b * k for k in C_d]
 
     e = []
-    for s in source_list:
+    for s in source_list:  # I'll save you one level of one-liner
         e.append([WEIGHT_a_b * ((((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + OFFSET_e) / SCALE_e) ** 2) for d in dest_list])
 
     sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, e)
@@ -373,7 +401,7 @@ def output_nodes_congestion(di_G, name):
 
 def output_edges(di_G, name):
     nx.write_edgelist(di_G, name, delimiter=",", data=False)
-    df = pd.read_csv(name, header=None)
+    df = pd.read_csv(name, header=None)  # Need to write out the header, which networkx doesn't seem to do~
     df.to_csv(name, header=["Source", "Target"], index=False)
 
 
