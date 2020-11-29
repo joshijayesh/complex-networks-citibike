@@ -258,7 +258,7 @@ def calc_congestion_drain(G, n, addl=0):
     in_degree = G.in_degree(n) + addl
     out_degree = G.out_degree(n)
 
-    return max(0, ((in_degree - out_degree) / capacity) * 100)
+    return ((in_degree - out_degree) / capacity) * 100
 
 
 def calc_congestion_source(G, n, addl=0):
@@ -266,7 +266,7 @@ def calc_congestion_source(G, n, addl=0):
     out_degree = G.out_degree(n) + addl
     in_degree = G.in_degree(n)
 
-    return max(0, ((out_degree - in_degree) / capacity) * 100)
+    return ((out_degree - in_degree) / capacity) * 100
         
 
 
@@ -294,7 +294,13 @@ def optimize(G, prox_G, source, drain):
     d_a = [0] + [WEIGHT_S_a * ((prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in source_list[1:]]
     d_b = [0] + [WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in dest_list[1:]]
     C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
+    min_C_s = min(C_s)
+    if(min_C_s < 0):  # Shift by min if < 0
+        C_s = [k - min_C_s for k in C_s]
     C_d = [calc_congestion_drain(G, k, 1 if k != source_list[0] else 0) for k in dest_list]
+    min_C_d = min(C_d)
+    if(min_C_d < 0):  # Shift by min if < 0
+        C_d = [k - min_C_d for k in C_d]
 
     C_s = [WEIGHT_a * k for k in C_s]
     C_d = [WEIGHT_b * k for k in C_d]
