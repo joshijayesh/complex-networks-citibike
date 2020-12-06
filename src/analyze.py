@@ -8,6 +8,7 @@ import googlemaps
 import time
 import collections
 import random
+import copy
 from datetime import datetime
 from pathlib import Path
 from numba.typed import List
@@ -17,30 +18,11 @@ from prettytable import PrettyTable
 from matplotlib import pyplot as plt
 from matplotlib.ticker import MultipleLocator, FormatStrFormatter
 from pylab import rcParams
+
 from solver_test import solve
+import params
 rcParams['figure.figsize'] = 12, 12
 
-
-# These are for the finding proximity
-CLEAR_SURROUND = 0.0001  # This var is used to cut off a bunch of stuff from the elevation LUT
-MIN_SURROUND = 5
-MAX_SURROUND = 10
-
-# These are etc
-HOUR_TO_COLLECT = 17
-CONGESTION_CONSIDERATION = 25.0
-COMPLIANCE_RATE = 0.2
-
-SCALE_d = 10
-SCALE_e = 10
-
-WEIGHT_S_a = (1/150)
-WEIGHT_a = 1
-WEIGHT_a_b = (1/1500)
-WEIGHT_b = 1
-WEIGHT_b_D = (1/150)
-
-OFFSET_e = 1000
 
 CURRENT_DAY = None
 
@@ -67,7 +49,7 @@ def cut_data(data, ll_tuple, surround):
     return new_data
 
 
-def closest(data, ll_tuple, spike=4, surround=CLEAR_SURROUND):
+def closest(data, ll_tuple, spike=4, surround=params.CLEAR_SURROUND):
     cutted_data = cut_data(data, ll_tuple, surround)
     if(not(cutted_data)):
         print("NO")
@@ -94,14 +76,14 @@ def find_proximity_graph(nodes):
     for ll, node in ll_dict.items():  # Maybe this needs to be better, but here I'm just trying to find some closest nodes
         closest_stations = closest(ll_list, ll)
         len_stations = len(closest_stations)
-        if(len_stations < MIN_SURROUND):
-            closest_stations = closest(ll_list, ll, surround=CLEAR_SURROUND * (2 if len_stations <= 3 else 1.15))
-        elif(len_stations > MAX_SURROUND):
-            closest_stations = closest(ll_list, ll, surround=CLEAR_SURROUND / (len_stations / MAX_SURROUND))
+        if(len_stations < params.MIN_SURROUND):
+            closest_stations = closest(ll_list, ll, surround=params.CLEAR_SURROUND * (2 if len_stations <= 3 else 1.15))
+        elif(len_stations > params.MAX_SURROUND):
+            closest_stations = closest(ll_list, ll, surround=params.CLEAR_SURROUND / (len_stations / params.MAX_SURROUND))
         
         len_stations = len(closest_stations)
-        if(len_stations > (MAX_SURROUND + 5)):
-            closest_stations = closest(ll_list, ll, surround=CLEAR_SURROUND / ((len_stations) / (3 * MAX_SURROUND)))
+        if(len_stations > (params.MAX_SURROUND + 5)):
+            closest_stations = closest(ll_list, ll, surround=params.CLEAR_SURROUND / ((len_stations) / (3 * params.MAX_SURROUND)))
 
         assert len(closest_stations) > 1, "Cannot be just 1... since that indicates the only closest is itself"
 
@@ -146,7 +128,7 @@ def parse_digraph(edges, nodes):
         if(CURRENT_DAY is None and start.day == end.day):  # need to check if day is equal to avoid mixed days
             CURRENT_DAY = start
 
-        if(start.hour <= HOUR_TO_COLLECT <= end_hour):  # We are either started or ended in the target hour!
+        if(start.hour <= params.HOUR_TO_COLLECT <= end_hour):  # We are either started or ended in the target hour!
             G.add_edge(str(row['Source']), str(row['Target']), chosen=False)
 
 
@@ -186,14 +168,24 @@ def plot_degree_dist(G, name):
     plt.savefig(name)
 
 
+def get_congestion_coefficient(G):
+    congestion = sorted([round((G.in_degree(n) - G.out_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
+    congestionCnt = collections.Counter(congestion)
+
+    coefficient = 0
+    for k, v in congestionCnt.items():
+        coefficient += (abs(k) / 100) * v
+
+    return coefficient
+
+
 def plot_congestion(G, name="", pre=True):
     global pre_min, pre_max, fig
     congestion = sorted([round((G.in_degree(n) - G.out_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
     congestionCnt = collections.Counter(congestion)
     con, cnt = zip(*congestionCnt.items())
 
-    out_congestion = {}
-    in_congestion = {}
+    in_congestion, out_congestion = {}, {}
 
     for key, value in congestionCnt.items():
         if(key <= 0):
@@ -231,13 +223,14 @@ def plot_congestion(G, name="", pre=True):
     # plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
     plt.plot([k / 100 for k in range(min_val_rounded_range * 100, 0 + 1, 50)], y_values_out, color='r')
     plt.plot([k / 100 for k in range(0, (max_val_rounded_range * 100) + 1, 50)], y_values_in, color='b')
-    plt.axvline(CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_IN = {}".format(CONGESTION_CONSIDERATION))
-    plt.axvline(-CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_OUT = {}".format(-CONGESTION_CONSIDERATION))
+    plt.axvline(params.CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_IN = {}".format(params.CONGESTION_CONSIDERATION))
+    plt.axvline(-params.CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_OUT = {}".format(-params.CONGESTION_CONSIDERATION))
     plt.axvline(min_val, color='r', linestyle='solid', linewidth=1, label="OUT_WORST")
     plt.axvline(max_val, color='b', linestyle='solid', linewidth=1, label="IN_WORST")
-    plt.title("{}::Congestion PDF".format("BEFORE" if pre else "AFTER"))
+    plt.title("{}::Congestion CCDF".format("BEFORE" if pre else "AFTER"))
     plt.xlabel("% of congestion, In - Out / Capacity")
-    plt.ylabel("Probability Distribution")
+    plt.ylabel("P(X>=x)")
+    plt.grid(True, which='major', axis='both')
     
     plt.xlim([pre_min - 1, pre_max + 1])
     ax.xaxis.set_major_locator(MultipleLocator(25))
@@ -248,9 +241,9 @@ def plot_congestion(G, name="", pre=True):
         lines, labels = ax.get_legend_handles_labels()
         fig.legend(lines, labels, loc='upper right')
         day = calendar.day_name[CURRENT_DAY.weekday()]
-        t = time.strptime(str(HOUR_TO_COLLECT), "%H")
+        t = time.strptime(str(params.HOUR_TO_COLLECT), "%H")
         fig.suptitle("Congestion Distribution for {} {}/{}/{}\nHOUR: {} COMPLIANCE RATE: {}%".format(
-            day, CURRENT_DAY.month, CURRENT_DAY.day, CURRENT_DAY.year, time.strftime(" %I %p", t).replace(" 0", " "), COMPLIANCE_RATE * 100),
+            day, CURRENT_DAY.month, CURRENT_DAY.day, CURRENT_DAY.year, time.strftime(" %I %p", t).replace(" 0", " "), params.COMPLIANCE_RATE),
             fontsize=20, fontweight='bold')
         plt.savefig(name)
 
@@ -292,8 +285,8 @@ def optimize(G, prox_G, source, drain):
         dest_list = [x for x in dest_list if x not in source_list]
 
     # Sorry, one-liners are the best for these scenarios
-    d_a = [0] + [WEIGHT_S_a * ((prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in source_list[1:]]
-    d_b = [0] + [WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / SCALE_d) ** 2) for k in dest_list[1:]]
+    d_a = [0] + [params.WEIGHT_S_a * ((prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] / params.SCALE_d) ** 2) for k in source_list[1:]]
+    d_b = [0] + [params.WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / params.SCALE_d) ** 2) for k in dest_list[1:]]
     C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
     min_C_s = min(C_s)
     if(min_C_s < 0):  # Shift by min if < 0
@@ -303,12 +296,12 @@ def optimize(G, prox_G, source, drain):
     if(min_C_d < 0):  # Shift by min if < 0
         C_d = [k - min_C_d for k in C_d]
 
-    C_s = [WEIGHT_a * k for k in C_s]
-    C_d = [WEIGHT_b * k for k in C_d]
+    C_s = [params.WEIGHT_a * k for k in C_s]
+    C_d = [params.WEIGHT_b * k for k in C_d]
 
     e = []
     for s in source_list:  # I'll save you one level of one-liner
-        e.append([WEIGHT_a_b * ((((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + OFFSET_e) / SCALE_e) ** 2) for d in dest_list])
+        e.append([params.WEIGHT_a_b * ((((G.nodes[s]['elevation']- G.nodes[d]['elevation']) + params.OFFSET_e) / params.SCALE_e) ** 2) for d in dest_list])
 
     sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, e)
 
@@ -317,10 +310,11 @@ def optimize(G, prox_G, source, drain):
     else:
         G.remove_edge(source_list[0], dest_list[0])
         G.add_edge(sel_s, sel_d, chosen=True)
-        print("Replacing {}->{} w/ {}->{}".format(source_list[0], dest_list[0], sel_s, sel_d))
+        if(params.VERBOSE):
+            print("Replacing {}->{} w/ {}->{}".format(source_list[0], dest_list[0], sel_s, sel_d))
 
 
-def optimize_start(G, prox_G, n, congestion_min=CONGESTION_CONSIDERATION):
+def optimize_start(G, prox_G, n, congestion_min=params.CONGESTION_CONSIDERATION):
     edge_list = list(G.out_edges(n))
     source_list = [n, *find_nn(prox_G, n)]
     considered = 0
@@ -340,7 +334,7 @@ def optimize_start(G, prox_G, n, congestion_min=CONGESTION_CONSIDERATION):
         optimize(G, prox_G, source_list, dest)
 
 
-def optimize_stop(G, prox_G, n, congestion_min=CONGESTION_CONSIDERATION):
+def optimize_stop(G, prox_G, n, congestion_min=params.CONGESTION_CONSIDERATION):
     edge_list = list(G.in_edges(n))
     dest_list = [n, *find_nn(prox_G, n)]
     considered = 0
@@ -367,13 +361,14 @@ def walk_nodes(G, prox_G):
     optimize_stop(G, prox_G, n)
 
 
-def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTION_CONSIDERATION):
+def random_optimization(G, prox_G, num_consideration=50, congestion_min=params.CONGESTION_CONSIDERATION):
     edges = list(G.edges)
     cnt = 0
     consideration = 0
     num_applied = 0
     num_rejected = 0
     total = len(edges)
+    compliance = params.COMPLIANCE_RATE / 100
     while(True):
         edge = edges[int(random.uniform(0, len(edges)))]
         consideration += 1
@@ -388,21 +383,24 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=CONGESTI
         if(C_s < congestion_min and C_d < congestion_min): continue # If below congestion min, do not consider this node
         consideration = 0
 
-        if(random.random() <= COMPLIANCE_RATE):  # Simulating refusal to comply
+        if(random.random() <= compliance):  # Simulating refusal to comply
             optimize(G, prox_G, edge[0], edge[1])
             num_applied += 1
-            print("Accepted {}".format(num_applied))
+            if(params.VERBOSE):
+                print("Accepted {}".format(num_applied))
         else:
             num_rejected += 1
-            print("Rejected {}".format(num_rejected))
+            if(params.VERBOSE):
+                print("Rejected {}".format(num_rejected))
         edges.remove(edge)
 
         cnt += 1
         if(cnt >= num_consideration): break
 
     print("Total Number of Trips: {}".format(total))
-    print("Num Accepted {}; Of Total {} %".format(num_applied, num_applied/total))
-    print("Num Rejected {}; Of Total {} %".format(num_rejected, num_rejected/total))
+    print("Num Offered {}; Of Total {} %".format(num_applied + num_rejected, ((num_applied + num_rejected) / total) * 100))
+    print("Num Accepted {}; Of Total {} %".format(num_applied, (num_applied/total) * 100))
+    print("Num Rejected {}; Of Total {} %".format(num_rejected, (num_rejected/total) * 100))
 
 
 def output_nodes_congestion(di_G, name):
@@ -414,6 +412,7 @@ def output_nodes_congestion(di_G, name):
             # Round congestion so can plot nicely
             rows[-1].append(
                  round(((di_G.in_degree(node[0]) - di_G.out_degree(node[0])) / node[1]['capacity']) * 100))
+            rows[-1][1] = rows[-1][-1]  # Change label to congestion %
         csv_writer.writerows(rows)
 
 
@@ -423,11 +422,41 @@ def output_edges(di_G, name):
     df.to_csv(name, header=["Source", "Target"], index=False)
 
 
+def run_multiple(edges, nodes, CP_list, compliance_list, iterations=1):
+    prox_edge_list = Path("prox.edgelist")
+    if(prox_edge_list.exists()):
+        prox_G = nx.read_edgelist(prox_edge_list)
+    else:
+        input("I gotta read all this stuff from Google API... this will take a long time... continue?")
+        prox_G = find_proximity_graph(nodes)
+        nx.write_edgelist(prox_G, "prox.edgelist")
+
+    m_G = parse_digraph(edges, nodes)
+    CONCOEF_0 = get_congestion_coefficient(m_G)
+
+    concoef_list = {"def": CONCOEF_0, "results": {}}
+
+    for i in range(iterations):
+        for CP in CP_list:
+            for compliance in compliance_list:
+                di_G = copy.deepcopy(m_G)
+                params.COMPLIANCE_RATE = compliance
+                random_optimization(di_G, prox_G, num_consideration=10000, congestion_min=CP)
+                concoef_list["results"].setdefault(CP, {}).setdefault(compliance, []).append(get_congestion_coefficient(di_G))
+
+    return concoef_list
+
+
 @click.command()
 @click.argument("edges", required=True)
 @click.argument("nodes", required=True)
 @click.option("-n", "--name", help="Choose name of the output", default="output")
-def cli(edges, nodes, name):
+@click.option("--verbose/--quiet", help="Choose whether to output verbose mode or not", default=True, is_flag=True)
+@click.option("--seed", help="Seed randomness, Default unseeded", default=None, type=str)
+def cli(edges, nodes, name, verbose, seed):
+    if(seed):
+        random.seed(int(seed, 16))
+    params.VERBOSE = verbose
     prox_edge_list = Path("prox.edgelist")
     if(prox_edge_list.exists()):
         prox_G = nx.read_edgelist(prox_edge_list)
@@ -437,15 +466,19 @@ def cli(edges, nodes, name):
         nx.write_edgelist(prox_G, "prox.edgelist")
 
     di_G = parse_digraph(edges, nodes)
-    output_nodes_congestion(di_G, "out_nodes_pre.csv")
-    output_edges(di_G, "out_edges_pre.csv")
+    output_nodes_congestion(di_G, "{}_nodes_pre.csv".format(name))
+    output_edges(di_G, "{}_edges_pre.csv".format(name))
     # plot_degree_dist(di_G, "pre.png")
     plot_congestion(di_G, pre=True)
+    CONCOEF_B = get_congestion_coefficient(di_G)
     # walk_nodes(di_G, prox_G)
-    random_optimization(di_G, prox_G, num_consideration=10000)
+    random_optimization(di_G, prox_G, num_consideration=10000, congestion_min=params.CONGESTION_CONSIDERATION)
     plot_congestion(di_G, name="{}.png".format(name), pre=False)
-    output_nodes_congestion(di_G, "out_nodes_post.csv")
-    output_edges(di_G, "out_edges_post.csv")
+    output_nodes_congestion(di_G, "{}_nodes_post.csv".format(name))
+    output_edges(di_G, "{}_edges_post.csv".format(name))
+    CONCOEF_A = get_congestion_coefficient(di_G)
+
+    print(CONCOEF_B, CONCOEF_A)
 
 
 if(__name__ == '__main__'):

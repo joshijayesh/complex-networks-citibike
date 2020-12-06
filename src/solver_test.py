@@ -1,5 +1,6 @@
 import networkx as nx
 from prettytable import PrettyTable
+import params
 
 
 def calc_weight(G, s, d):
@@ -28,7 +29,7 @@ def solve(source_list, dest_list, d_a, d_b, C_s, C_d, e):
     except Exception:
         import pdb;pdb.set_trace()
 
-    if(True):
+    if(params.VERBOSE):
         x = PrettyTable()
         x.field_names = ["a", "b", "distA cost", "conA cost", "eAB cost", "conB cost","distB cost","total cost"]
         x.add_row([source_list[0], dest_list[0], d_a[0], C_s[0], e[0][0], 
