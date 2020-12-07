@@ -55,3 +55,19 @@ python parse.py ... -w {path to weather.csv}
 
 Where weather.csv can be obtained [here] (https://www.ncdc.noaa.gov/data-access)
 
+
+## How to use analyze.py
+
+This script accepts the nodes.csv and edgesXXX.csv that is created from parse.py. The current repo contains an example
+that can be used directly to test the script. The prox.edgelist is required if you don't want to call Google Maps API
+(for which you'd need to setup a API Key).
+
+You can run the script as follows:
+
+```console
+python analyze.py edgesXXX.csv nodes.csv -n {name of run}
+```
+
+Option argument of --quiet if you want to disable VERBOSE logging as well as --seed if you want to pass a hex value seed
+to control the randomness.
+
