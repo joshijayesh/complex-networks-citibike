@@ -2,10 +2,10 @@
 
 ## Installation
 
-Requires these python libraries:
+Requires third party python libraries that can be installed as so:
 
 ```console
-pip install pandas click numbas numpy
+pip install -r requirements.txt
 ```
 
 ## How to use parse.py
