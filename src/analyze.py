@@ -1,3 +1,20 @@
+'''
+:File: analyze.py
+:Author: Jayesh Joshi
+:Email: jayeshjo1@utexas.edu
+
+Prerequisite: Expected users to parse through all of the datasets via parse.py
+
+This file is where we perform congestion analysis and perform our optimization model. For the optimization model, we
+employ two separate networks: the citibike network with edges/nodes created from parse.py and the proxy network that
+uses the Google Maps Distance Matrix API to find the distance to nearest stations. Then, from these two networks, we
+run out optimization model with the greedy algorithm to improve the congestion state of the network.
+
+This script will output starting/ending networks that are transformed to include congestion information that can be
+plugged straight into Gephi, as well as the CCDF congestion distribution plot to compare between the network before
+and after the application of the optimization model.
+'''
+
 import click
 import csv
 import calendar
@@ -23,19 +40,47 @@ from solver_test import solve
 import params
 rcParams['figure.figsize'] = 12, 12
 
-
+# Denotes the current day of the network under consideration. do NOT set this before running this script
 CURRENT_DAY = None
 
 
-@njit
+# https://numba.pydata.org/numba-doc/latest/user/performance-tips.html
+@njit  # Use Nambas NJIT optimization to optimize the runtime here... 
 def distance(lat1, lon1, lat2, lon2):
+    '''
+    Calculate the distance between two geolocations.
+
+    :param lat1: Latitude of the first geolocation
+    :type lat1: int
+    :param lon1: Longitude of the first geolocation
+    :type lon1: int
+    :param lat2: Latitude of the second geolocation
+    :type lat2: int
+    :param lon2: Longitude of the second geolocation
+    :type lon2: int
+    '''
     p = 0.017453292519943295
     a = 0.5 - cos((lat2-lat1)*p)/2 + cos(lat1*p)*cos(lat2*p) * (1-cos((lon2-lon1)*p)) / 2
     return 12742 * asin(sqrt(a))
 
 
-@njit
+# https://numba.pydata.org/numba-doc/latest/user/performance-tips.html
+@njit  # Use Nambas NJIT optimization to optimize the runtime here... 
 def cut_data(data, ll_tuple, surround):
+    '''
+    Finds all of the target locations surrounding our source station measured by a distance around the source station
+    calculated by surround.
+
+    This is used to reduce our search so we don't need to calculate the distance across ALL of the different points
+    in new york city -- that would potentially take hours.
+
+    :params data: Contains all of the different tuples of geolocations that we need to search through
+    :type data: np.array
+    :params ll_tuple: Source geolocation. [0] represents longitude, [1] represents latitude
+    :type tuple: tuple
+    :params spike: Indicates how much we need to expand the region if we don't find 
+    :type spike:
+    '''
     new_data = List()
     lon_min = ll_tuple[0] * (1 + surround)  # assuming lon is always negative
     lon_max = ll_tuple[0] * (1 - surround)
@@ -50,6 +95,24 @@ def cut_data(data, ll_tuple, surround):
 
 
 def closest(data, ll_tuple, spike=4, surround=params.CLEAR_SURROUND):
+    '''
+    Finds the nearest geolocation in the data to the current geolocation. This is used to search across all of the
+    geolocations that we have available to find the nearest location that we have information of each of the different
+    bike stations across NYC.
+
+    It will initially look for locations near CLEAR_SURROUND around our current geolocation. If it fails, we look at a
+    larger location. This is used to reduce the number of stations under consideration to reduce the time it takes to
+    calculate the distance between a source and nearby stations.
+
+    :params data: Contains all of the different tuples of geolocations that we need to search through
+    :type data: np.array
+    :params ll_tuple: Source geolocation. [0] represents longitude, [1] represents latitude
+    :type tuple: tuple
+    :params spike: Indicates how much we need to expand the region if we don't find 
+    :type spike:
+
+    :returns: Closest elevation target to our source station.
+    '''
     cutted_data = cut_data(data, ll_tuple, surround)
     if(not(cutted_data)):
         print("NO")
@@ -59,7 +122,18 @@ def closest(data, ll_tuple, spike=4, surround=params.CLEAR_SURROUND):
 
 
 def find_proximity_graph(nodes):
-    gmaps = googlemaps.Client(key="AIzaSyCQ2HFIRPomOgGRNrXSnKdltYxGGYfeGx0")
+    '''
+    For each of the nodes (stations) in our network, we need to find a set of surrounding nodes that we can find the
+    proximity for. These stations are used to satisfy the proximity network used in the optimization model to consider
+    nearby stations for each of the nodes in our graph.
+
+    As this makes over 10k+ requests to the GMaps so we cannot run this every single time (GMaps has a cap of 100k
+    requests per month). So, once we get the proxy graph, we can save it off and reload it for the next time.
+
+    :params nodes: Path to the nodes.csv from parse.py
+    :type nodes: str
+    '''
+    gmaps = googlemaps.Client(key="ENTER YOUR API KEY HERE")  # Removed my API key
     G = nx.Graph()
     df = pd.read_csv(nodes)
     ll_dict = {}
@@ -73,6 +147,7 @@ def find_proximity_graph(nodes):
         G.add_node(node_name, latitude=latitude, longitude=longitude)
 
     ll_list = np.array(list(ll_dict.keys()))
+    # First, we need to find all of the closest stations to each of our stations in our network
     for ll, node in ll_dict.items():  # Maybe this needs to be better, but here I'm just trying to find some closest nodes
         closest_stations = closest(ll_list, ll)
         len_stations = len(closest_stations)
@@ -87,6 +162,8 @@ def find_proximity_graph(nodes):
 
         assert len(closest_stations) > 1, "Cannot be just 1... since that indicates the only closest is itself"
 
+        # Once we have found all closest stations, need to look up walking distance via Google Maps
+        # This could probably be optimized by upkeeping previous lookups for future pairs, but eh
         for tgt_ll in closest_stations:
             tgt_node = ll_dict[tgt_ll]
             
@@ -94,7 +171,6 @@ def find_proximity_graph(nodes):
             origin_longitude = tgt_ll[0]
             dest_latitude = ll[1]
             dest_longitude = ll[0]
-
 
             if(tgt_node != node):
                 dist = gmaps.distance_matrix([str(origin_latitude) + " " + str(origin_longitude)],
@@ -109,6 +185,15 @@ def find_proximity_graph(nodes):
 
 
 def parse_digraph(edges, nodes):
+    '''
+    Now, for our real directed graph, we need to parse our current nodes.csv and edges.csv to build our networkx graph
+    that we can use for our analysis. For this, we convert some of the features, and keep around the relavant ones
+
+    :params edges: Path to target edges file. Expected per day. If per month passed, will use the first day of month
+    :type edges: str
+    :params nodes: Path to target nodes file.
+    :type nodes: str
+    '''
     global CURRENT_DAY
     G = nx.DiGraph()
     df = pd.read_csv(nodes)
@@ -131,11 +216,21 @@ def parse_digraph(edges, nodes):
         if(start.hour <= params.HOUR_TO_COLLECT <= end_hour):  # We are either started or ended in the target hour!
             G.add_edge(str(row['Source']), str(row['Target']), chosen=False)
 
-
     return G
 
 
 def plot_degree_dist(G, name):
+    '''
+    Old version of the plotter just used for reference/lookups
+
+    This plotter was used to create the histogram of the PDF which didn't work out so well, ergo our new format below
+    that plots a CCDF instead.
+
+    :params G: Di_graph of our network that we want to plot the distribution for.
+    :type G: Graph
+    :params name: Name of the figure that we want to use to save the .png
+    :type name: str
+    '''
     degrees = sorted([G.in_degree(n) for n in G.nodes()], reverse=True)
     degreeCnt = collections.Counter(degrees)
     deg, cnt = zip(*degreeCnt.items())
@@ -169,6 +264,12 @@ def plot_degree_dist(G, name):
 
 
 def get_congestion_coefficient(G):
+    '''
+    Find the Congestion state by Summation of abs(C_s(k)) * p(k) for each node k in the graph.
+
+    :params G: Di_graph of our network that we want to plot the distribution for.
+    :type G: Graph
+    '''
     congestion = sorted([round((G.in_degree(n) - G.out_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
     congestionCnt = collections.Counter(congestion)
 
@@ -180,6 +281,22 @@ def get_congestion_coefficient(G):
 
 
 def plot_congestion(G, name="", pre=True):
+    '''
+    Plot the congestion CCDF of the network before and after applying the optimization model.
+
+    Here, we calculate the CCDF of both the outgoing and incoming congestions for each node on the system, and plot it
+    as a combined CCDF where the left side represents the outgoing, and the right side represents the incoming
+    congestion spread. This can be used to quickly see the effect of the optimzation model.
+
+    We use the pre to find the min/max of the ylims to set the limits for both the graphs.
+
+    :params G: Di_graph of our network that we want to plot the distribution for.
+    :type G: Graph
+    :params name: Name of the figure that we want to use to save the .png
+    :type name: str
+    :params pre: Indicates whether this call is from before (True) or after (False) of running the optimization model
+    :type pre: bool
+    '''
     global pre_min, pre_max, fig
     congestion = sorted([round((G.in_degree(n) - G.out_degree(n)) / G.nodes[n]['capacity'], 2) * 100 for n in G.nodes()], reverse=True)
     congestionCnt = collections.Counter(congestion)
@@ -220,13 +337,20 @@ def plot_congestion(G, name="", pre=True):
             y_values_in.append(sum([v if k >= tgt else 0 for k, v in in_congestion.items()]) / in_total_count)
 
     ax = plt.subplot(2,1,1 if pre else 2)
-    # plt.hist(congestion, bins=50, density=True, color='c', edgecolor='k')
+    # Outgoing
     plt.plot([k / 100 for k in range(min_val_rounded_range * 100, 0 + 1, 50)], y_values_out, color='r')
+    # Incoming
     plt.plot([k / 100 for k in range(0, (max_val_rounded_range * 100) + 1, 50)], y_values_in, color='b')
+
+    # Plot the CP lines
     plt.axvline(params.CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_IN = {}".format(params.CONGESTION_CONSIDERATION))
     plt.axvline(-params.CONGESTION_CONSIDERATION, color='k', linestyle='dashed', linewidth=1, label="CP_OUT = {}".format(-params.CONGESTION_CONSIDERATION))
+
+    # Plot the worst case for both sides
     plt.axvline(min_val, color='r', linestyle='solid', linewidth=1, label="OUT_WORST")
     plt.axvline(max_val, color='b', linestyle='solid', linewidth=1, label="IN_WORST")
+
+    # Titles and labels
     plt.title("{}::Congestion CCDF".format("BEFORE" if pre else "AFTER"))
     plt.xlabel("% of congestion, In - Out / Capacity")
     plt.ylabel("P(X>=x)")
@@ -247,7 +371,18 @@ def plot_congestion(G, name="", pre=True):
             fontsize=20, fontweight='bold')
         plt.savefig(name)
 
+
 def calc_congestion_drain(G, n, addl=0):
+    '''
+    Finds the C_d for the optimization model
+
+    :params G: Di_graph of our network that we want to plot the distribution for.
+    :type G: Graph
+    :params n: ID of the node to calculate for
+    :type n: str
+    :params addl: Additional congestion to add. Need to add an extra one if not the original source/dest.
+    :type addl: int
+    '''
     capacity = G.nodes[n]['capacity']
     in_degree = G.in_degree(n) + addl
     out_degree = G.out_degree(n)
@@ -256,6 +391,16 @@ def calc_congestion_drain(G, n, addl=0):
 
 
 def calc_congestion_source(G, n, addl=0):
+    '''
+    Finds the C_s for the optimization model
+
+    :params G: Di_graph of our network that we want to plot the distribution for.
+    :type G: Graph
+    :params n: ID of the node to calculate for
+    :type n: str
+    :params addl: Additional congestion to add. Need to add an extra one if not the original source/dest.
+    :type addl: int
+    '''
     capacity = G.nodes[n]['capacity']
     out_degree = G.out_degree(n) + addl
     in_degree = G.in_degree(n)
@@ -265,6 +410,14 @@ def calc_congestion_source(G, n, addl=0):
 
 
 def find_nn(prox_G, n):
+    '''
+    Simply, find the nearest neighbors of each of the nodes by consulting the prox graph
+
+    :params prox_G: prox_graph of our network that contains nearest neighbors
+    :type prox_G: Graph
+    :params n: ID of the node to calculate for
+    :type n: str
+    '''
     list_of_nn = []
     for edge in prox_G.edges(n):
         list_of_nn.append(edge[0] if edge[1] == n else edge[1])
@@ -272,10 +425,27 @@ def find_nn(prox_G, n):
 
 
 def optimize(G, prox_G, source, drain):
+    '''
+    Once we have the source and the drain stations that we want to optimize for, we can begin gathering all required
+    information to run our optimization model. To do this, we will first calculate all of the distance/congestion/
+    elevations as necessary for each potential combinations on the sub-network. These are calculated as a single long
+    list for distnace/congestion and a 2-d array of sources/dests for elevation. These lists are then passed onto the
+    solver to find the min cost to traverse between the source and the destination.
+
+    :params G: di_graph containing our trip network
+    :type G: Graph
+    :params prox_G: prox_graph of our network that contains nearest neighbors
+    :type prox_G: Graph
+    :params source: ID of the source node or list (if found before calling this method for optimizing runtime)
+    :type source: str or list
+    :params drain: ID of the drain node or list (if found before calling this method for optimizing runtime)
+    :type drain: str or list
+    '''
     source_list = [source, *find_nn(prox_G, source)] if type(source) is str else source
     dest_list = [drain, *find_nn(prox_G, drain)] if type(drain) is str else drain
 
-    if(type(drain) is list):  # to avoid redundancy
+    # Need to avoid redundancy in case there are stations in both source AND drain
+    if(type(drain) is list):
         if(source_list[0] in dest_list):  # If the drain is part of source_list, remove drain from source
             dest_list.remove(source_list[0])
         source_list = [x for x in source_list if x not in dest_list]
@@ -287,10 +457,12 @@ def optimize(G, prox_G, source, drain):
     # Sorry, one-liners are the best for these scenarios
     d_a = [0] + [params.WEIGHT_S_a * ((prox_G.edges[(k, source_list[0])]['dist']['distance']['value'] / params.SCALE_d) ** 2) for k in source_list[1:]]
     d_b = [0] + [params.WEIGHT_b_D * ((prox_G.edges[(k, dest_list[0])]['dist']['distance']['value'] / params.SCALE_d) ** 2) for k in dest_list[1:]]
+
     C_s = [calc_congestion_source(G, k, 1 if k != source_list[0] else 0) for k in source_list]
     min_C_s = min(C_s)
-    if(min_C_s < 0):  # Shift by min if < 0
+    if(min_C_s < 0):  # Shift by min if < 0 (requirement of networkx /shrug)
         C_s = [k - min_C_s for k in C_s]
+
     C_d = [calc_congestion_drain(G, k, 1 if k != source_list[0] else 0) for k in dest_list]
     min_C_d = min(C_d)
     if(min_C_d < 0):  # Shift by min if < 0
@@ -305,7 +477,7 @@ def optimize(G, prox_G, source, drain):
 
     sel_s, sel_d = solve(source_list, dest_list, d_a, d_b, C_s, C_d, e)
 
-    if(sel_s == sel_d):
+    if(sel_s == source_list[0] and sel_d == dest_list[0]):  # Original path is the best path
         print("Already optimal path")
     else:
         G.remove_edge(source_list[0], dest_list[0])
@@ -315,6 +487,20 @@ def optimize(G, prox_G, source, drain):
 
 
 def optimize_start(G, prox_G, n, congestion_min=params.CONGESTION_CONSIDERATION):
+    '''
+    This is for a separate algorithm, NOT the greedy algorithm
+
+    This will optimize all trips w/ the node as the starting station.
+
+    :params G: di_graph containing our trip network
+    :type G: Graph
+    :params prox_G: prox_graph of our network that contains nearest neighbors
+    :type prox_G: Graph
+    :params n: ID of the node to optimize
+    :type n: str
+    :params congestion_min: CP of our optimization model
+    :type congestion_min: float
+    '''
     edge_list = list(G.out_edges(n))
     source_list = [n, *find_nn(prox_G, n)]
     considered = 0
@@ -335,6 +521,20 @@ def optimize_start(G, prox_G, n, congestion_min=params.CONGESTION_CONSIDERATION)
 
 
 def optimize_stop(G, prox_G, n, congestion_min=params.CONGESTION_CONSIDERATION):
+    '''
+    This is for a separate algorithm, NOT the greedy algorithm
+
+    This will optimize all trips w/ the node as the destination station.
+
+    :params G: di_graph containing our trip network
+    :type G: Graph
+    :params prox_G: prox_graph of our network that contains nearest neighbors
+    :type prox_G: Graph
+    :params n: ID of the node to optimize
+    :type n: str
+    :params congestion_min: CP of our optimization model
+    :type congestion_min: float
+    '''
     edge_list = list(G.in_edges(n))
     dest_list = [n, *find_nn(prox_G, n)]
     considered = 0
@@ -356,12 +556,45 @@ def optimize_stop(G, prox_G, n, congestion_min=params.CONGESTION_CONSIDERATION):
 
 
 def walk_nodes(G, prox_G):
+    '''
+    This is for a separate algorithm, NOT the greedy algorithm
+
+    This algorithm will optimize a single node as the initial starting/destination station for all trips associated
+    with the node. This is just a initial algorithm developed to test the optimization model.
+
+    :params G: di_graph containing our trip network
+    :type G: Graph
+    :params prox_G: prox_graph of our network that contains nearest neighbors
+    :type prox_G: Graph
+    '''
     n = '2006'  # This currently selects one node :P
     optimize_start(G, prox_G, n)
     optimize_stop(G, prox_G, n)
 
 
 def random_optimization(G, prox_G, num_consideration=50, congestion_min=params.CONGESTION_CONSIDERATION):
+    '''
+    Greedy Algorithm from the paper.
+
+    Firstly, we look across all of the different edges (trips) available on the network, where we do not consider self
+    loops. From this network, we select a random edge with uniform distribution, and determine if they will comply based
+    on the compliance rate. If compliant, we will optimize the trip to find the optimal start/destionation stations to
+    find the most optimal route that the user could take to improve the congestion of the network while ensuring the
+    user convenience. Then, whether the user is compliant or not, we remove them from the edge list so they are not
+    considered again (if the user has been moved for example, they shouldn't be moved again, nor should they be expected
+    to be compliant in the future if they refuse it in the past).
+
+    Finally, we print out some statistics at the end for the overall statistics of the optimization.
+
+    :params G: di_graph containing our trip network
+    :type G: Graph
+    :params prox_G: prox_graph of our network that contains nearest neighbors
+    :type prox_G: Graph
+    :params num_consideration: Maximum number of changes
+    :type num_consideration: int
+    :params congestion_min: CP of the model, to only consider trips with congestion issues > CP
+    :type congestion_min: float
+    '''
     edges = list(G.edges)
     cnt = 0
     consideration = 0
@@ -372,7 +605,7 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=params.C
     while(True):
         edge = edges[int(random.uniform(0, len(edges)))]
         consideration += 1
-        if(consideration >= 2 * len(edges)): break
+        if(consideration >= 2 * len(edges)): break  # Exit condition 1: No more trips to consider
         if(edge[0] == edge[1]):
             edges.remove(edge)  # Remove self loops
             continue
@@ -395,7 +628,7 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=params.C
         edges.remove(edge)
 
         cnt += 1
-        if(cnt >= num_consideration): break
+        if(cnt >= num_consideration): break  # Exit condition 2: number of considerations passed max threshold
 
     print("Total Number of Trips: {}".format(total))
     print("Num Offered {}; Of Total {} %".format(num_applied + num_rejected, ((num_applied + num_rejected) / total) * 100))
@@ -404,6 +637,14 @@ def random_optimization(G, prox_G, num_consideration=50, congestion_min=params.C
 
 
 def output_nodes_congestion(di_G, name):
+    '''
+    Output the current network by adding congestion state at the end as a csv file that can be imported to Gephi.
+    
+    :params di_G: di_graph containing our trip network
+    :type di_G: Graph
+    :params name: Name to tag onto the csv file
+    :type name: str
+    '''
     with open(name, "w", newline='') as csv_file:
         csv_writer = csv.writer(csv_file, delimiter=",")
         rows = [['ID', 'Label', 'Latitude', 'Longitude', 'Elevation', 'Capacity', 'Congestion']]
@@ -417,12 +658,39 @@ def output_nodes_congestion(di_G, name):
 
 
 def output_edges(di_G, name):
+    '''
+    Output the current network edges as a csv file that can be imported to Gephi.
+    
+    :params di_G: di_graph containing our trip network
+    :type di_G: Graph
+    :params name: Name to tag onto the csv file
+    :type name: str
+    '''
     nx.write_edgelist(di_G, name, delimiter=",", data=False)
     df = pd.read_csv(name, header=None)  # Need to write out the header, which networkx doesn't seem to do~
     df.to_csv(name, header=["Source", "Target"], index=False)
 
 
 def run_multiple(edges, nodes, CP_list, compliance_list, iterations=1):
+    '''
+    See shmoo.py
+
+    This is a simple interface to run the optimization over multiple iterations to account for randomness, or to test
+    across different parameters. This begins by reading all of the edges/nodes every call and setting up the network
+    for optimization to ensure that we start fresh. This is useful we want to shmoo across different networks (i.e.
+    different days or hours).
+
+    :params edges: Name of edges file
+    :type edges: str
+    :params nodes: Name of nodes file
+    :type nodes: str
+    :param CP_list: List of CP to shmoo
+    :type CP_list: list
+    :param compliance_list: List of CR to shmoo
+    :type compliance_list: list
+    :param iterations: Number of times to iterate each turn
+    :type iterations: int
+    '''
     prox_edge_list = Path("prox.edgelist")
     if(prox_edge_list.exists()):
         prox_G = nx.read_edgelist(prox_edge_list)
@@ -439,7 +707,7 @@ def run_multiple(edges, nodes, CP_list, compliance_list, iterations=1):
     for i in range(iterations):
         for CP in CP_list:
             for compliance in compliance_list:
-                di_G = copy.deepcopy(m_G)
+                di_G = copy.deepcopy(m_G)  # Note this is a deepcopy to ensure we restart from base network every time
                 params.COMPLIANCE_RATE = compliance
                 random_optimization(di_G, prox_G, num_consideration=10000, congestion_min=CP)
                 concoef_list["results"].setdefault(CP, {}).setdefault(compliance, []).append(get_congestion_coefficient(di_G))
@@ -454,9 +722,19 @@ def run_multiple(edges, nodes, CP_list, compliance_list, iterations=1):
 @click.option("--verbose/--quiet", help="Choose whether to output verbose mode or not", default=True, is_flag=True)
 @click.option("--seed", help="Seed randomness, Default unseeded", default=None, type=str)
 def cli(edges, nodes, name, verbose, seed):
+    '''
+    Entry point when we run analyze.py
+
+    Firstly, parse the edges/nodes into our graph that we can use for our optimization model + find the proxy graph.
+    Then, output the initial state of the network as nodes/edges that we can plot to gephi + add to the CCDF graph as
+    pre. Now we can run our optimization model and similarly output the nodes/edges for gephi and finalize our CCDF
+    plot after the optimization model.
+    '''
     if(seed):
         random.seed(int(seed, 16))
     params.VERBOSE = verbose
+
+    # Setup Proximity Graph
     prox_edge_list = Path("prox.edgelist")
     if(prox_edge_list.exists()):
         prox_G = nx.read_edgelist(prox_edge_list)
@@ -465,14 +743,21 @@ def cli(edges, nodes, name, verbose, seed):
         prox_G = find_proximity_graph(nodes)
         nx.write_edgelist(prox_G, "prox.edgelist")
 
+    # Pre Optimization
     di_G = parse_digraph(edges, nodes)
     output_nodes_congestion(di_G, "{}_nodes_pre.csv".format(name))
     output_edges(di_G, "{}_edges_pre.csv".format(name))
-    # plot_degree_dist(di_G, "pre.png")
+    # plot_degree_dist(di_G, "pre.png")  # Old version of the plot
     plot_congestion(di_G, pre=True)
     CONCOEF_B = get_congestion_coefficient(di_G)
+
+
+    # Optimization
     # walk_nodes(di_G, prox_G)
     random_optimization(di_G, prox_G, num_consideration=10000, congestion_min=params.CONGESTION_CONSIDERATION)
+
+
+    # Post Optimization
     plot_congestion(di_G, name="{}.png".format(name), pre=False)
     output_nodes_congestion(di_G, "{}_nodes_post.csv".format(name))
     output_edges(di_G, "{}_edges_post.csv".format(name))

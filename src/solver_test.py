@@ -1,9 +1,27 @@
+'''
+:File: solver_test.py
+:Author: Jayesh Joshi
+:Email: jayeshjo1@utexas.edu
+
+Solver portion of our optimization model
+'''
+
 import networkx as nx
 from prettytable import PrettyTable
 import params
 
 
 def calc_weight(G, s, d):
+    '''
+    Calculate the summation of all the weights from source to destination
+
+    :params G: optimization network
+    :type G: Graph
+    :params s: Source node
+    :type s: str
+    :params d: Drain node
+    :type d: str
+    '''
     weight = 0
     weight += G.edges[('S', s)]['weight']
     weight += G.edges[(s, d)]['weight']
@@ -12,10 +30,33 @@ def calc_weight(G, s, d):
 
 
 def solve(source_list, dest_list, d_a, d_b, C_s, C_d, e):
+    '''
+    Given all of the different weights for each node + edges on the optimization network, find the minimum cost to
+    traverse from the source to the drain, finding the most optimal path.
+
+    If verbose is enabled, this will output a nice table that shows how the final selection was made.
+
+    :params source_list: List of source stations
+    :type source_list: list
+    :params dest_list: List of destination stations
+    :type dest_list: list
+    :params d_a: Distance from Source to each starting station
+    :type d_a: list
+    :params d_b: Distance from each destination station to the drain
+    :type d_b: list
+    :params C_s: Congestion at each starting node
+    :type C_s: list
+    :params C_d: Congestion at each destination node
+    :type C_d: list
+    :params e: Elevation from each stating node to each destination node
+    :type e: 2D-list
+    '''
+
+    # Create the sub-optimization network
     G = nx.DiGraph()
 
     for idx, node in enumerate(source_list):
-        G.add_edge("S", node, weight=d_a[idx] + C_s[idx])
+        G.add_edge("S", node, weight=d_a[idx] + C_s[idx])  # since dijkstra only has edge weights, move C to d
 
     for idx, node in enumerate(dest_list):
         G.add_edge(node, "D", weight=d_b[idx] + C_d[idx])
@@ -24,10 +65,7 @@ def solve(source_list, dest_list, d_a, d_b, C_s, C_d, e):
         for j, dest in enumerate(dest_list):
             G.add_edge(src, dest, weight=e[i][j])
 
-    try:
-        shortest_path = nx.dijkstra_path(G, "S", "D", weight="weight")
-    except Exception:
-        import pdb;pdb.set_trace()
+    shortest_path = nx.dijkstra_path(G, "S", "D", weight="weight")
 
     if(params.VERBOSE):
         x = PrettyTable()
